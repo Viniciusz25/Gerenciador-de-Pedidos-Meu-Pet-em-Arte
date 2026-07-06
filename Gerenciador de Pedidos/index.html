@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#2b1713" />
+    <meta
+      name="description"
+      content="Painel inteligente para gerenciamento de pedidos da MEU PET EM ARTE."
+    />
+    <title>MEU PET EM ARTE | Pedidos</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css?v=expenses-fix" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Menu principal">
+        <div class="brand">
+          <div class="brand-mark">
+            <img src="assets/logo-meu-pet-em-arte.png" alt="Logo Meu Pet em Arte" />
+          </div>
+          <div>
+            <strong>Meu Pet em Arte</strong>
+            <span>Chaveiros personalizados</span>
+          </div>
+        </div>
+
+        <nav class="side-nav" id="sideNav">
+          <button class="nav-item active" data-view="dashboard">Dashboard</button>
+          <button class="nav-item" data-view="orders">Pedidos</button>
+          <button class="nav-item" data-view="production">Controle de Produção</button>
+          <button class="nav-item" data-view="products">Produtos</button>
+          <button class="nav-item" data-view="expenses">Despesas</button>
+          <button class="nav-item" data-view="reports">Relatorios</button>
+          <button class="nav-item" data-view="gallery">Galeria</button>
+          <button class="nav-item" data-view="import">Importacao</button>
+          <button class="nav-item" data-view="admin">Admin</button>
+        </nav>
+
+        <div class="sidebar-card">
+          <span class="tiny-label">Momento da marca</span>
+          <strong>Pets virando lembrancas</strong>
+          <p>Fila organizada para producao, envio e pos-venda.</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">Painel de pedidos</span>
+            <h1 id="viewTitle">Dashboard</h1>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button" id="themeToggle" type="button" title="Alternar tema">
+              <span>NO</span>
+            </button>
+            <button class="primary-button" id="newOrderButton" type="button">Novo pedido</button>
+          </div>
+        </header>
+
+        <section class="view active" id="dashboardView" data-title="Dashboard"></section>
+        <section class="view" id="ordersView" data-title="Pedidos"></section>
+        <section class="view" id="productionView" data-title="Controle de Produção"></section>
+        <section class="view" id="productsView" data-title="Produtos"></section>
+        <section class="view" id="expensesView" data-title="Despesas"></section>
+        <section class="view" id="reportsView" data-title="Relatorios"></section>
+        <section class="view" id="galleryView" data-title="Galeria concluida"></section>
+        <section class="view" id="importView" data-title="Importar planilha"></section>
+        <section class="view" id="adminView" data-title="Administrativo"></section>
+      </main>
+
+      <nav class="mobile-nav" id="mobileNav" aria-label="Menu mobile">
+        <button class="mobile-item active" data-view="dashboard">Inicio</button>
+        <button class="mobile-item" data-view="orders">Pedidos</button>
+        <button class="mobile-item" data-view="production">Producao</button>
+        <button class="mobile-item" data-view="products">Produtos</button>
+        <button class="mobile-item" data-view="expenses">Despesas</button>
+        <button class="mobile-item" data-view="reports">Relatorios</button>
+      </nav>
+    </div>
+
+    <dialog class="modal" id="orderModal">
+      <form method="dialog" class="modal-card order-modal-card" id="orderForm">
+        <div class="modal-head">
+          <div>
+            <span class="eyebrow">Cadastro rapido</span>
+            <h2>Novo pedido</h2>
+          </div>
+          <button class="ghost-button" value="cancel" type="button" id="closeOrderModal">Fechar</button>
+        </div>
+
+        <div class="modal-section">
+          <div class="section-head">
+            <h3>Dados do cliente</h3>
+          </div>
+          <div class="form-grid order-form-grid">
+            <label>
+              Cliente
+              <input required name="client" placeholder="Nome do cliente" autocomplete="name" />
+            </label>
+            <label>
+              WhatsApp
+              <input name="whatsapp" type="tel" placeholder="(11) 99999-9999" autocomplete="tel" />
+            </label>
+            <label>
+              Forma de Pagamento
+              <select required name="payment">
+                <option>Pix</option>
+                <option>Cartao</option>
+                <option>Boleto</option>
+                <option>Dinheiro</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <div class="section-head">
+            <h3>Detalhes do pedido</h3>
+          </div>
+          <div class="form-grid order-form-grid">
+            <label>
+              Produto
+              <select required name="product"></select>
+            </label>
+            <label>
+              Quantidade
+              <input required name="quantity" type="number" min="1" value="1" />
+            </label>
+            <label>
+              Frete
+              <input required name="shipping" type="number" min="0" step="0.01" value="14.90" />
+            </label>
+            <label>
+              Estado
+              <select name="state">
+                <option value="SP">SP</option>
+                <option value="RJ">RJ</option>
+                <option value="MG">MG</option>
+                <option value="ES">ES</option>
+                <option value="PR">PR</option>
+                <option value="RS">RS</option>
+                <option value="SC">SC</option>
+                <option value="BA">BA</option>
+                <option value="DF">DF</option>
+                <option value="GO">GO</option>
+                <option value="MT">MT</option>
+                <option value="MS">MS</option>
+                <option value="PE">PE</option>
+                <option value="PA">PA</option>
+                <option value="CE">CE</option>
+                <option value="PB">PB</option>
+                <option value="PI">PI</option>
+                <option value="RN">RN</option>
+                <option value="AM">AM</option>
+                <option value="AC">AC</option>
+                <option value="AP">AP</option>
+                <option value="RO">RO</option>
+                <option value="RR">RR</option>
+                <option value="TO">TO</option>
+              </select>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" name="useStateShipping" />
+              <span>Aplicar frete por Estado</span>
+            </label>
+            <label>
+              Codigo de rastreio
+              <input name="tracking" placeholder="BR000000000BR" />
+            </label>
+            <label class="wide">
+              Foto do pet
+              <input name="photo" type="file" accept="image/*" />
+              <div id="newOrderPhotoPreview" class="asset-preview empty" style="display:none; min-height:140px; max-height:140px; margin-top:8px;"></div>
+            </label>
+            <label class="wide">
+              Observacoes
+              <textarea name="notes" rows="4" placeholder="Detalhes da arte, cor, nome e preferencias"></textarea>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" type="reset">Limpar</button>
+          <button class="primary-button" type="submit">Salvar pedido</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal detail-modal" id="detailModal"></dialog>
+
+    <script src="app.js?v=expenses-fix"></script>
+  </body>
+</html>
