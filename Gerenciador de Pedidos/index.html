@@ -10,7 +10,7 @@
     />
     <title>MEU PET EM ARTE | Pedidos</title>
     <link rel="manifest" href="manifest.json" />
-    <link rel="stylesheet" href="styles.css?v=expenses-fix" />
+    <link rel="stylesheet" href="styles.css?v=products-v2" />
   </head>
   <body>
     <div class="app-shell">
@@ -29,7 +29,8 @@
           <button class="nav-item active" data-view="dashboard">Dashboard</button>
           <button class="nav-item" data-view="orders">Pedidos</button>
           <button class="nav-item" data-view="production">Controle de Produção</button>
-          <button class="nav-item" data-view="products">Produtos</button>
+          <button class="nav-item" data-view="shipping">Controle de Envio</button>
+          <button class="nav-item" data-view="products">Produto</button>
           <button class="nav-item" data-view="expenses">Despesas</button>
           <button class="nav-item" data-view="reports">Relatorios</button>
           <button class="nav-item" data-view="gallery">Galeria</button>
@@ -37,10 +38,8 @@
           <button class="nav-item" data-view="admin">Admin</button>
         </nav>
 
-        <div class="sidebar-card">
-          <span class="tiny-label">Momento da marca</span>
-          <strong>Pets virando lembrancas</strong>
-          <p>Fila organizada para producao, envio e pos-venda.</p>
+        <div class="sidebar-card" id="productionQueueSummary">
+          <!-- preenchido dinamicamente -->
         </div>
       </aside>
 
@@ -61,7 +60,8 @@
         <section class="view active" id="dashboardView" data-title="Dashboard"></section>
         <section class="view" id="ordersView" data-title="Pedidos"></section>
         <section class="view" id="productionView" data-title="Controle de Produção"></section>
-        <section class="view" id="productsView" data-title="Produtos"></section>
+        <section class="view" id="shippingView" data-title="Controle de Envio"></section>
+        <section class="view" id="productsView" data-title="Produto"></section>
         <section class="view" id="expensesView" data-title="Despesas"></section>
         <section class="view" id="reportsView" data-title="Relatorios"></section>
         <section class="view" id="galleryView" data-title="Galeria concluida"></section>
@@ -73,7 +73,8 @@
         <button class="mobile-item active" data-view="dashboard">Inicio</button>
         <button class="mobile-item" data-view="orders">Pedidos</button>
         <button class="mobile-item" data-view="production">Producao</button>
-        <button class="mobile-item" data-view="products">Produtos</button>
+        <button class="mobile-item" data-view="shipping">Envio</button>
+        <button class="mobile-item" data-view="products">Produto</button>
         <button class="mobile-item" data-view="expenses">Despesas</button>
         <button class="mobile-item" data-view="reports">Relatorios</button>
       </nav>
@@ -97,6 +98,14 @@
             <label>
               Cliente
               <input required name="client" placeholder="Nome do cliente" autocomplete="name" />
+            </label>
+            <label>
+              Nome do pet
+              <input name="petName" placeholder="Nome do pet" autocomplete="off" />
+            </label>
+            <label class="wide">
+              Nomes dos pets
+              <textarea name="petNames" rows="3" placeholder="Um nome por linha ou separado por vírgula"></textarea>
             </label>
             <label>
               WhatsApp
@@ -128,41 +137,14 @@
               <input required name="quantity" type="number" min="1" value="1" />
             </label>
             <label>
-              Frete
-              <input required name="shipping" type="number" min="0" step="0.01" value="14.90" />
+              Data do Pedido
+              <input name="date" type="date" required />
             </label>
             <label>
-              Estado
-              <select name="state">
-                <option value="SP">SP</option>
-                <option value="RJ">RJ</option>
-                <option value="MG">MG</option>
-                <option value="ES">ES</option>
-                <option value="PR">PR</option>
-                <option value="RS">RS</option>
-                <option value="SC">SC</option>
-                <option value="BA">BA</option>
-                <option value="DF">DF</option>
-                <option value="GO">GO</option>
-                <option value="MT">MT</option>
-                <option value="MS">MS</option>
-                <option value="PE">PE</option>
-                <option value="PA">PA</option>
-                <option value="CE">CE</option>
-                <option value="PB">PB</option>
-                <option value="PI">PI</option>
-                <option value="RN">RN</option>
-                <option value="AM">AM</option>
-                <option value="AC">AC</option>
-                <option value="AP">AP</option>
-                <option value="RO">RO</option>
-                <option value="RR">RR</option>
-                <option value="TO">TO</option>
+              Frete cadastrado em despesas
+              <select name="shippingExpenseId">
+                <option value="">Selecione uma despesa de frete</option>
               </select>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px">
-              <input type="checkbox" name="useStateShipping" />
-              <span>Aplicar frete por Estado</span>
             </label>
             <label>
               Codigo de rastreio
@@ -189,6 +171,6 @@
 
     <dialog class="modal detail-modal" id="detailModal"></dialog>
 
-    <script src="app.js?v=expenses-fix"></script>
+    <script type="module" src="/src/main.js"></script>
   </body>
 </html>

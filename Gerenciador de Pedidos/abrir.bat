@@ -1,0 +1,1 @@
+Start-Process powershell -ArgumentList '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File','serve-local.ps1' -WindowStyle Hidden

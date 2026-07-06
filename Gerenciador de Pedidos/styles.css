@@ -1,24 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
 :root {
   color-scheme: light;
-  --cream: #fff4df;
-  --cream-2: #ffe8ba;
-  --surface: rgba(255, 252, 244, 0.9);
-  --surface-solid: #fffaf0;
-  --ink: #251512;
-  --muted: #7a6259;
-  --line: #edd8bd;
-  --red: #d83f31;
-  --red-dark: #8f241f;
-  --yellow: #ffd66b;
-  --black: #211816;
-  --green: #2f8f5b;
-  --blue: #4077b5;
-  --shadow: 0 22px 60px rgba(71, 35, 24, 0.14);
-  --radius: 22px;
-  --radius-sm: 14px;
-  --sidebar: 270px;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --cream: #fbf7f3;
+  --cream-2: #f3eae1;
+  --surface: rgba(255, 255, 255, 0.75);
+  --surface-solid: #ffffff;
+  --ink: #1f1b1a;
+  --muted: #857d7b;
+  --line: rgba(0, 0, 0, 0.08);
+  --red: #e64a33;
+  --red-dark: #b82b17;
+  --yellow: #ffc436;
+  --black: #1f1b1a;
+  --green: #25a861;
+  --blue: #2c7ada;
+  --shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.08), 0 0 12px rgba(255,255,255,0.4) inset;
+  --radius: 24px;
+  --radius-sm: 12px;
+  --sidebar: 280px;
+  --glass-border: rgba(255, 255, 255, 0.5);
+  font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * {
@@ -30,9 +33,11 @@ body {
   min-height: 100vh;
   color: var(--ink);
   background:
-    radial-gradient(circle at 8% 8%, rgba(255, 214, 107, 0.34), transparent 24rem),
-    radial-gradient(circle at 92% 12%, rgba(216, 63, 49, 0.12), transparent 26rem),
-    linear-gradient(135deg, #fff8ea 0%, #fff0ce 48%, #fffaf0 100%);
+    radial-gradient(circle at 15% 15%, rgba(255, 196, 54, 0.25), transparent 35rem),
+    radial-gradient(circle at 85% 20%, rgba(230, 74, 51, 0.15), transparent 40rem),
+    radial-gradient(circle at 50% 80%, rgba(44, 122, 218, 0.1), transparent 30rem),
+    linear-gradient(135deg, #fcfaf8 0%, #f6f0eb 50%, #fbf7f3 100%);
+  background-attachment: fixed;
 }
 
 body::before {
@@ -40,36 +45,40 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  opacity: 0.34;
+  opacity: 0.5;
   background-image:
-    radial-gradient(circle, rgba(216, 63, 49, 0.22) 0 3px, transparent 4px),
-    radial-gradient(circle, rgba(33, 24, 22, 0.14) 0 2px, transparent 3px);
+    radial-gradient(circle, rgba(230, 74, 51, 0.15) 0 2px, transparent 2px),
+    radial-gradient(circle, rgba(31, 27, 26, 0.08) 0 1px, transparent 1px);
   background-position:
-    18px 24px,
-    82px 78px;
+    20px 30px,
+    80px 80px;
   background-size:
-    150px 150px,
-    180px 180px;
+    140px 140px,
+    160px 160px;
+  z-index: -1;
 }
 
 body.dark {
   color-scheme: dark;
-  --cream: #211816;
-  --cream-2: #3a2923;
-  --surface: rgba(39, 28, 25, 0.9);
-  --surface-solid: #2b1f1c;
-  --ink: #fff4df;
-  --muted: #d0b8a7;
-  --line: #50382f;
-  --red: #ff6b58;
-  --red-dark: #ff9888;
-  --yellow: #ffd66b;
-  --black: #fff4df;
-  --shadow: 0 22px 60px rgba(0, 0, 0, 0.28);
+  --cream: #141211;
+  --cream-2: #24201f;
+  --surface: rgba(28, 25, 24, 0.65);
+  --surface-solid: #1c1918;
+  --ink: #f7f3f0;
+  --muted: #a69f9d;
+  --line: rgba(255, 255, 255, 0.12);
+  --red: #ff5e45;
+  --red-dark: #ff8b7a;
+  --yellow: #ffcd4d;
+  --black: #f7f3f0;
+  --shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.4), 0 0 12px rgba(255,255,255,0.05) inset;
+  --glass-border: rgba(255, 255, 255, 0.08);
   background:
-    radial-gradient(circle at 8% 8%, rgba(255, 214, 107, 0.12), transparent 24rem),
-    radial-gradient(circle at 92% 12%, rgba(216, 63, 49, 0.16), transparent 26rem),
-    linear-gradient(135deg, #1a1210 0%, #241916 48%, #191211 100%);
+    radial-gradient(circle at 15% 15%, rgba(255, 196, 54, 0.1), transparent 35rem),
+    radial-gradient(circle at 85% 20%, rgba(255, 94, 69, 0.1), transparent 40rem),
+    radial-gradient(circle at 50% 80%, rgba(44, 122, 218, 0.05), transparent 30rem),
+    linear-gradient(135deg, #100e0d 0%, #1a1716 50%, #141211 100%);
+  background-attachment: fixed;
 }
 
 button,
@@ -102,11 +111,13 @@ button:disabled {
   flex-direction: column;
   gap: 22px;
   padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.68);
+  border: 1px solid var(--glass-border);
   border-radius: 30px;
   background: var(--surface);
   box-shadow: var(--shadow);
   backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .brand {
@@ -843,6 +854,17 @@ h3 {
   gap: 12px;
 }
 
+.order-card-pet-list {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--yellow) 12%, var(--surface-solid));
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
 .order-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -1108,6 +1130,144 @@ td {
 .kanban-column-body.drag-over {
   box-shadow: inset 0 0 0 3px rgba(43, 124, 255, 0.18);
   background: color-mix(in srgb, var(--blue) 8%, var(--surface-solid));
+}
+
+.kanban-group-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.kanban-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.kanban-group-summary {
+  display: grid;
+  gap: 3px;
+}
+
+.kanban-group-summary strong {
+  font-size: 1rem;
+}
+
+.kanban-group-summary span,
+.kanban-group-toggle {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.kanban-group-primary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kanban-progress-row {
+  display: grid;
+  gap: 6px;
+}
+
+.kanban-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.kanban-mini-order {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.kanban-mini-order-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.kanban-mini-order-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.kanban-mini-order-check input {
+  width: 16px;
+  height: 16px;
+}
+
+.kanban-mini-order-pets {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.kanban-group-card .kanban-card-photo {
+  width: 56px;
+  height: 56px;
+  min-width: 56px;
+}
+
+.kanban-group-expanded {
+  display: grid;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+
+.kanban-mini-order {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  color: inherit;
+  text-align: left;
+}
+
+.kanban-mini-order span {
+  display: grid;
+  gap: 2px;
+}
+
+.kanban-mini-order small {
+  color: var(--muted);
+}
+
+.kanban-mini-order b {
+  white-space: nowrap;
 }
 
 .kanban-card {
@@ -1628,6 +1788,10 @@ td {
   font-weight: 900;
 }
 
+.asset-card small {
+  margin-top: -2px;
+}
+
 .asset-preview.empty {
   background:
     radial-gradient(circle at 50% 48%, var(--yellow) 0 48px, transparent 49px),
@@ -1646,6 +1810,30 @@ td {
   gap: 12px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
+}
+
+.detail-list .detail-pet-items {
+  display: grid;
+  gap: 6px;
+}
+
+.detail-edit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.detail-edit-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.detail-edit-form label:nth-child(1) {
+  grid-column: 1 / -1;
 }
 
 .history-list {
@@ -1781,6 +1969,37 @@ td {
 
 .asset-preview:not(.empty) {
   box-shadow: 0 8px 24px rgba(216, 63, 49, 0.15);
+}
+
+.file-preview {
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 214, 107, 0.26), transparent 28%),
+    linear-gradient(135deg, rgba(43, 24, 19, 0.96), rgba(216, 63, 49, 0.92));
+}
+
+.file-preview strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  background: rgba(255, 244, 223, 0.12);
+  border: 1px solid rgba(255, 244, 223, 0.18);
+  font-size: 1.05rem;
+  letter-spacing: 0.08em;
+}
+
+.file-preview span {
+  max-width: 100%;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.3;
+  word-break: break-word;
+  color: #fff4df;
 }
 
 /* Smooth tab transições */
@@ -1926,6 +2145,15 @@ td {
   min-width: 0;
 }
 
+.product-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 148px;
+}
+
 .product-card-info strong {
   display: block;
   font-size: 0.92rem;
@@ -1982,10 +2210,10 @@ td {
   letter-spacing: 0.04em;
 }
 
-.product-card-field .cell-input {
-  font-size: 0.95rem;
-  padding: 6px 8px;
-  border-radius: 8px;
+.product-card-field strong {
+  font-size: 1rem;
+  font-weight: 850;
+  line-height: 1.2;
 }
 
 .product-card-footer {
@@ -2019,4 +2247,846 @@ body.dark .product-card-icon {
 
 body.dark .margin-mid {
   color: #e5c44e;
+}
+
+/* --- REDESIGN DO CONTROLE DE PRODUÇÃO --- */
+
+.production-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  padding: 24px;
+}
+
+.production-header-section {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 20px;
+}
+
+.production-header-section .title-area {
+  position: relative;
+}
+
+.production-header-section h2 {
+  font-size: 1.8rem;
+  font-weight: 800;
+  margin: 0 0 6px 0;
+  color: var(--ink);
+}
+
+.production-header-section .muted {
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.production-toolbar-new {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 8px 14px;
+  min-width: 240px;
+  flex: 1;
+}
+
+.search-icon-new {
+  font-size: 1rem;
+  color: var(--muted);
+  margin-right: 8px;
+}
+
+.search-input-new {
+  border: none;
+  background: transparent;
+  width: 100%;
+  outline: none;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.filter-dropdown-wrap {
+  display: flex;
+  align-items: center;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 8px 12px;
+  gap: 6px;
+}
+
+.dropdown-icon {
+  font-size: 0.95rem;
+}
+
+.filter-select-new {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: pointer;
+  padding-right: 4px;
+}
+
+.add-col-button {
+  background: transparent;
+  border: 1px dashed var(--muted);
+  color: var(--muted);
+  font-weight: 700;
+  padding: 9px 16px;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  transition: all 180ms ease;
+}
+
+.add-col-button:hover {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+body.dark .add-col-button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.primary-button-new {
+  background: var(--red);
+  color: #fff;
+  font-weight: 700;
+  padding: 10px 20px;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 12px rgba(216, 63, 49, 0.2);
+  transition: all 180ms ease;
+}
+
+.primary-button-new:hover {
+  background: var(--red-dark);
+  transform: translateY(-1px);
+}
+
+/* Kanban Board Layout */
+.kanban-board-new {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 8px 0;
+  align-items: flex-start;
+}
+
+.kanban-column-new {
+  flex: 0 0 280px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  min-height: 500px;
+  border: 1px solid var(--line);
+}
+
+body.dark .kanban-column-new {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.kanban-column-head-new {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-radius: 19px 19px 0 0;
+}
+
+.column-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.column-index {
+  font-size: 0.85rem;
+  font-weight: 800;
+  opacity: 0.7;
+}
+
+.column-name {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.delete-column-btn-new {
+  background: transparent;
+  border: none;
+  font-size: 0.8rem;
+  padding: 2px 4px;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+  transition: opacity 180ms;
+}
+
+.delete-column-btn-new:hover {
+  opacity: 1;
+}
+
+.column-count-badge {
+  background: rgba(255, 255, 255, 0.7);
+  color: #1f2937;
+  font-size: 0.75rem;
+  font-weight: 800;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+
+body.dark .column-count-badge {
+  background: rgba(0, 0, 0, 0.3);
+  color: #fff;
+}
+
+.kanban-column-body-new {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* Kanban Cards Redesign */
+.kanban-card-new {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+  cursor: grab;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+  position: relative;
+}
+
+.kanban-card-new:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(71, 35, 24, 0.08);
+}
+
+.kanban-card-new.overdue {
+  border: 1px solid #f87171;
+  background: linear-gradient(135deg, var(--surface-solid), #fef2f2);
+}
+
+body.dark .kanban-card-new.overdue {
+  background: linear-gradient(135deg, var(--surface-solid), #451a1a);
+}
+
+.kanban-card-keychain-container {
+  position: relative;
+  padding-top: 14px;
+  display: flex;
+  justify-content: center;
+}
+
+.keychain-link-ring {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #bbb;
+  border-radius: 50%;
+  z-index: 2;
+  background: transparent;
+}
+
+.keychain-link-chain {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 10px;
+  border: 1px solid #aaa;
+  background: #ddd;
+  border-radius: 1px;
+  z-index: 2;
+}
+
+.kanban-card-photo {
+  width: 58px;
+  height: 58px;
+  border-radius: 12px;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--cream);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+}
+
+.kanban-card-info-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kanban-card-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kanban-card-id {
+  color: var(--red);
+  font-weight: 800;
+  font-size: 0.75rem;
+}
+
+.kanban-card-menu-btn {
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.kanban-card-pet-name {
+  margin: 2px 0 0 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kanban-card-breed {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kanban-card-meta-new {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 0.75rem;
+}
+
+.kanban-card-delivery-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.calendar-icon-card {
+  font-size: 0.75rem;
+}
+
+.kanban-card-priority-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.priority-dot-new {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.priority-dot-new.priority-alta {
+  background-color: #ef4444;
+}
+
+.priority-dot-new.priority-média,
+.priority-dot-new.priority-media {
+  background-color: #eab308;
+}
+
+.priority-dot-new.priority-baixa {
+  background-color: #22c55e;
+}
+
+.priority-text-new {
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* Custom dashed placeholder */
+.kanban-add-placeholder {
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 180ms ease;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.kanban-add-placeholder:hover {
+  background: var(--surface-solid);
+  border-color: var(--muted);
+  color: var(--ink);
+}
+
+.plus-icon {
+  font-size: 1rem;
+}
+
+/* --- REDESIGN DO PAINEL DE RELATÓRIOS --- */
+
+.reports-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  padding: 24px;
+}
+
+.reports-toolbar-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 20px;
+}
+
+.export-report-btn {
+  background: transparent;
+  border: 1px solid var(--red);
+  color: var(--red);
+  font-weight: 700;
+  padding: 9px 18px;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  transition: all 180ms ease;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.export-report-btn:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+/* KPIs Cards */
+.reports-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.kpi-card-new {
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+}
+
+.kpi-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kpi-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.kpi-value {
+  font-size: 1.45rem;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.kpi-icon-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.kpi-icon-red {
+  background-color: rgba(216, 63, 49, 0.1);
+  color: var(--red);
+}
+
+.kpi-icon-orange {
+  background-color: rgba(249, 115, 22, 0.1);
+  color: #b45309;
+}
+
+.kpi-icon-green {
+  background-color: rgba(34, 197, 94, 0.1);
+  color: #15803d;
+}
+
+.kpi-icon-pink {
+  background-color: rgba(244, 63, 94, 0.1);
+  color: #be185d;
+}
+
+/* Charts Grid Row */
+.reports-middle-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .reports-middle-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chart-panel-new {
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chart-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.chart-panel-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.chart-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.legend-indicator {
+  font-size: 0.78rem;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-line {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  background-color: var(--red);
+  border-radius: 2px;
+}
+
+.legend-line-dashed {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-top: 3px dashed #fca5a5;
+}
+
+.line-chart-container {
+  padding-top: 10px;
+  flex: 1;
+}
+
+/* Donut Chart Layout */
+.donut-chart-layout {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  justify-content: space-around;
+  flex-wrap: wrap;
+}
+
+.donut-svg-wrap {
+  flex-shrink: 0;
+}
+
+.donut-legend-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 140px;
+}
+
+.donut-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.donut-legend-color {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.donut-legend-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.donut-legend-label {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.donut-legend-count {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.donut-legend-pct {
+  font-weight: 800;
+  color: var(--ink);
+}
+
+/* Bottom Grid Row */
+.reports-bottom-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.font-small {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Product Sales Bar Chart */
+.product-sales-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.product-sale-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.product-sale-icon {
+  font-size: 1.3rem;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background-color: var(--cream);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.product-sale-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.product-sale-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.product-sale-bar-wrap {
+  height: 6px;
+  background-color: var(--cream);
+  border-radius: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.product-sale-bar-fill {
+  height: 100%;
+  background-color: var(--red);
+  border-radius: 3px;
+}
+
+.product-sale-total {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--ink);
+  min-width: 20px;
+  text-align: right;
+}
+
+/* Week Days Bar Chart */
+.week-days-bars-layout {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  height: 150px;
+  padding: 10px 0;
+}
+
+.week-bar-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  gap: 6px;
+  height: 100%;
+  justify-content: flex-end;
+  position: relative;
+}
+
+.week-bar-container {
+  width: 12px;
+  height: 100px;
+  background-color: var(--cream);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.week-bar-fill {
+  background-color: var(--red);
+  border-radius: 6px;
+  width: 100%;
+}
+
+.week-bar-tooltip {
+  position: absolute;
+  bottom: 115px;
+  background-color: var(--ink);
+  color: var(--surface-solid);
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  white-space: nowrap;
+}
+
+.week-bar-col:hover .week-bar-tooltip {
+  opacity: 1;
+}
+
+.week-bar-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* Top Clients List */
+.top-clients-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.top-client-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.top-client-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--ink);
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+
+.top-client-name {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink);
+  flex: 1;
+}
+
+.top-client-amount {
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+/* Footer status line */
+.reports-footer-line {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--muted);
 }
