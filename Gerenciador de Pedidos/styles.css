@@ -510,11 +510,11 @@ h3 {
 .hero-panel {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 0.92fr) minmax(200px, 1fr);
   gap: 20px;
   align-items: center;
   overflow: hidden;
-  min-height: 320px;
+  min-height: 160px;
   color: #fff8ea;
   background:
     linear-gradient(135deg, rgba(33, 24, 22, 0.94), rgba(143, 36, 31, 0.92)),
@@ -645,29 +645,29 @@ h3 {
   background: rgba(255, 255, 255, 0.5);
 }
 
-.status-novo-pedido {
+.status-novo-pedido, .status-novo {
+  color: #fff;
+  background: #3b82f6; /* Blue */
+}
+
+.status-em-producao, .status-producao, .status-desenho, .status-impressao, .status-pintura {
   color: #5f3a00;
-  background: #ffe6a2;
+  background: #facc15; /* Yellow */
 }
 
-.status-em-producao {
-  color: #fff8ea;
-  background: #d83f31;
+.status-aguardando-cliente, .status-aguardando {
+  color: #fff;
+  background: #f97316; /* Orange */
 }
 
-.status-finalizado {
-  color: #1f563b;
-  background: #cfeedd;
+.status-pronto, .status-embalagem, .status-postagem, .status-enviado, .status-entregue, .status-finalizado {
+  color: #fff;
+  background: #22c55e; /* Green */
 }
 
-.status-enviado {
-  color: #1d4d7a;
-  background: #d6e8ff;
-}
-
-.status-entregue {
-  color: #2b1713;
-  background: #ffd66b;
+.status-atrasado {
+  color: #fff;
+  background: #ef4444; /* Red */
 }
 
 .status-cancelado {

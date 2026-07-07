@@ -32,8 +32,8 @@
           <button class="nav-item" data-view="shipping">Controle de Envio</button>
           <button class="nav-item" data-view="products">Produto</button>
           <button class="nav-item" data-view="expenses">Despesas</button>
-          <button class="nav-item" data-view="reports">Relatorios</button>
-          <button class="nav-item" data-view="gallery">Galeria</button>
+          <button class="nav-item" data-view="finance">Financeiro</button>
+
           <button class="nav-item" data-view="import">Importacao</button>
           <button class="nav-item" data-view="admin">Admin</button>
         </nav>
@@ -63,8 +63,8 @@
         <section class="view" id="shippingView" data-title="Controle de Envio"></section>
         <section class="view" id="productsView" data-title="Produto"></section>
         <section class="view" id="expensesView" data-title="Despesas"></section>
-        <section class="view" id="reportsView" data-title="Relatorios"></section>
-        <section class="view" id="galleryView" data-title="Galeria concluida"></section>
+        <section class="view" id="financeView" data-title="Financeiro"></section>
+
         <section class="view" id="importView" data-title="Importar planilha"></section>
         <section class="view" id="adminView" data-title="Administrativo"></section>
       </main>
@@ -141,9 +141,9 @@
               <input name="date" type="date" required />
             </label>
             <label>
-              Frete cadastrado em despesas
-              <select name="shippingExpenseId">
-                <option value="">Selecione uma despesa de frete</option>
+              Frete Tabela (UF)
+              <select name="shippingUF">
+                <option value="">Selecione um Estado</option>
               </select>
             </label>
             <label>

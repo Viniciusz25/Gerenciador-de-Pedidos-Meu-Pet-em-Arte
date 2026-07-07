@@ -180,8 +180,15 @@ function load(key, fallback) {
 }
 
 function save() {
-  localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
-  runAutoBackup();
+  try {
+    localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
+    runAutoBackup();
+  } catch (err) {
+    if (err.name === "QuotaExceededError") {
+      alert("Ops! O armazenamento do navegador estourou (limite de fotos/dados atingido). Seu pedido não pôde ser salvo. Limpe ou faça backup de pedidos antigos para liberar espaço!");
+      console.error(err);
+    }
+  }
 }
 
 function saveExpenses() {
@@ -358,8 +365,7 @@ const viewRenderers = {
   shipping: () => renderShipping(),
   products: () => renderProducts(),
   expenses: () => renderExpenses(),
-  reports: () => renderReports(),
-  gallery: () => renderGallery(),
+  finance: () => renderFinance(),
   import: () => renderImport(),
   admin: () => renderAdmin(),
 };
@@ -411,6 +417,7 @@ function renderSidebarQueue() {
 function render() {
   ensureAppStructure();
   renderSidebarQueue();
+  hydrateForm();
   Object.entries(viewRenderers).forEach(([view, fn]) => {
     try { fn(); } catch (e) { console.error(`render ${view} error`, e); }
   });
@@ -528,8 +535,8 @@ function ensureAppStructure() {
     section.className = "view";
     section.id = "expensesView";
     section.dataset.title = "Despesas";
-    const reports = document.getElementById("reportsView");
-    main.insertBefore(section, reports || null);
+    const finance = document.getElementById("financeView");
+    main.insertBefore(section, finance || null);
   }
 
   const sideNav = document.getElementById("sideNav");
@@ -563,75 +570,141 @@ function setView(view) {
   document.getElementById(`${targetView}View`).classList.add("active");
   document.getElementById("viewTitle").textContent = document.getElementById(`${targetView}View`).dataset.title;
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === targetView));
-  // Re-render the newly activated view so data is always fresh
-  renderCurrentView();
-}
-
-function renderDashboard() {
-  const data = metrics();
-  const currentYear = new Date().getFullYear();
+  // Re-render the newly function renderDashboard() {
   const currentMonth = today.toISOString().slice(0, 7);
-  const currentMonthOrders = state.orders.filter((order) => order.status !== "Cancelado" && order.date && order.date.startsWith(currentMonth));
+  const activeOrders = state.orders.filter((order) => order.status !== "Cancelado");
+  const currentMonthOrders = activeOrders.filter((order) => order.date && order.date.startsWith(currentMonth));
   const emotionalStatuses = Array.isArray(state.productionStatuses) && state.productionStatuses.length ? state.productionStatuses : STATUS;
+  
+  const novosPedidos = activeOrders.filter(o => getOrderWorkflowStatus(o) === "Novo Pedido").length;
+  const emProducao = activeOrders.filter(o => getOrderWorkflowStatus(o) === "Produção").length;
+  const aguardandoCliente = activeOrders.filter(o => {
+     const s = String(o.status||"").toLowerCase();
+     return s.includes("aguardando") || s.includes("cliente");
+  }).length;
+  const prontosParaEnvio = activeOrders.filter(o => getOrderWorkflowStatus(o) === "Postagem").length;
+  const enviadosHoje = activeOrders.filter(o => {
+     const sentHistory = o.history && o.history.find(h => h.text.toLowerCase().includes("enviado"));
+     return getOrderWorkflowStatus(o) === "Enviado" && sentHistory && sentHistory.at.startsWith(today.toISOString().slice(0,10).split('-').reverse().join('/')); 
+  }).length;
+
+  const lateOrders = activeOrders.filter(o => orderIsOverdue(o));
+  const recentOrders = activeOrders.slice(0, 6);
+
+  const queueHtml = emotionalStatuses.map(status => {
+     const count = activeOrders.filter(o => o.status === status).length;
+     return `<span class="status-pill ${statusClass(status)}">${status}<b>${count}</b></span>`;
+  }).join("");
+
   document.getElementById("dashboardView").innerHTML = `
-    <section class="hero-panel panel">
-      <div>
-        <span class="eyebrow">SaaS pet/cartoon premium</span>
-        <h2>+ de ${data.pets} pets ja viraram arte &hearts;</h2>
-        <p>Controle cada chaveiro personalizado desde o pedido ate a etiqueta de envio, com numeros claros e uma experiencia gostosa de usar.</p>
-        <div class="quick-actions">
-          <button class="primary-button" type="button" data-open-order>Novo pedido</button>
-          <button class="ghost-button" type="button" data-view="orders">Ver tabela</button>
+    <section class="hero-panel panel" style="min-height: auto; padding: 20px;">
+      <div style="display: flex; flex-direction: column; gap: 16px; width: 100%;">
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+           <input type="text" id="dashboardSearch" placeholder="Buscar pedido, cliente, telefone..." style="flex:1; min-width:250px; padding: 12px; border-radius: 8px; border: none; font-size: 1rem; color: #1a1a1a;" />
+           <button class="primary-button" data-open-order>Novo Pedido</button>
         </div>
-      </div>
-      <div class="logo-showcase" aria-label="Logo Meu Pet em Arte">
-        <img src="assets/logo-meu-pet-em-arte.png" alt="Logo Meu Pet em Arte" />
-      </div>
-      <div class="pet-showcase" aria-hidden="true">
-        <span class="paw paw-a"></span>
-        <span class="paw paw-b"></span>
-        <span class="star star-a">*</span>
-        <span class="star star-b">*</span>
-        <span class="heart">&hearts;</span>
+        <div class="quick-actions" style="display:flex; gap:8px; flex-wrap: wrap;">
+          <button class="ghost-button" data-view="orders" onclick="setTimeout(()=>document.querySelector('[data-sort=\\'status\\']')?.click(),100)">Gerar Etiqueta</button>
+          <button class="ghost-button" data-view="expenses" onclick="setTimeout(()=>document.getElementById('newExpenseBtn')?.click(),100)">Adicionar Despesa</button>
+          <button class="ghost-button" data-view="products" onclick="setTimeout(()=>document.getElementById('newProductBtn')?.click(),100)">Cadastrar Produto</button>
+        </div>
       </div>
     </section>
 
-    <div class="grid metric-grid">
-      ${metric("Total de pedidos", data.total, "Mês atual")}
-      ${metric("Em producao", data.production, "Chaveiros no atelie")}
-      ${metric("Pedidos enviados", data.sent, "Com rastreio")}
-      ${metric("Faturamento do mes", money(data.revenue), "Vendas ativas")}
-      ${metric("Faturamento do Ano", money(data.yearlyRevenue), `Total em ${currentYear}`)}
-      ${metric("Despesas do mes", money(data.expenses), "Operacao e marketing")}
-      ${metric("Lucro estimado", money(data.profitAfterExpenses), "Liquido aproximado")}
-      ${metric("Ticket Médio", money(data.ticketMedio), "Bruto por pedido")}
-      ${metric("Tempo de Maquina", `${data.totalMachineTime.toFixed(1)}h`, "Uso total ativo")}
+    <div class="grid metric-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+      ${metric("Novos Pedidos", novosPedidos, "Aguardando início")}
+      ${metric("Em Produção", emProducao, "No ateliê")}
+      ${metric("Aguardando Aprovação", aguardandoCliente, "Feedback pendente")}
+      ${metric("Prontos para Envio", prontosParaEnvio, "Aguardando coleta")}
+      ${metric("Enviados Hoje", enviadosHoje, "Despachados")}
     </div>
 
-    <div class="grid content-grid">
-      <div class="panel">
-        <div class="section-head"><h3>Fila emocional de producao</h3><button class="mini-button" data-view="orders">Organizar</button></div>
-        <div class="status-strip">${emotionalStatuses.map((status) => `<span class="status-pill ${statusClass(status)}">${status}<b>${currentMonthOrders.filter((order) => order.status === status).length}</b></span>`).join("")}</div>
+    <div class="grid content-grid" style="grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 24px; align-items: start;">
+      
+      <div style="display:flex; flex-direction: column; gap: 24px;">
+        <div class="panel">
+          <div class="section-head">
+             <h3>Fila de Produção</h3>
+             <button class="mini-button" data-view="production">Ir para o Kanban</button>
+          </div>
+          <div class="status-strip" style="flex-wrap: wrap;">${queueHtml}</div>
+        </div>
+
+        <div class="panel">
+          <h3>Pedidos Recentes</h3>
+          <div class="list" id="dashboardRecentOrdersList">
+            ${renderDashboardRecentOrders(recentOrders)}
+          </div>
+        </div>
       </div>
-      <div class="panel">
-        <h3>Proximas entregas</h3>
-        <div class="list">${(() => {
-          const upcoming = state.orders
-            .filter((order) => order.status !== "Entregue" && order.status !== "Cancelado" && order.date)
-            .sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"))
-            .slice(0, 6);
-          if (!upcoming.length) return `<p class="muted" style="padding:12px 0">Nenhum pedido pendente.</p>`;
-          return upcoming.map((order) => {
-            return `
-            <button class="soft-row" data-detail="${order.id}">
-              <span><strong>${order.client}</strong><small>${order.product}</small></span>
-              <span style="display:flex;align-items:center;gap:6px"><b>${formatDate(order.date)}</b></span>
-            </button>`;
-          }).join("");
-        })()}</div>
+
+      <div style="display:flex; flex-direction: column; gap: 24px;">
+        
+        ${(lateOrders.length > 0 || prontosParaEnvio > 0) ? `
+        <div class="panel" style="border: 2px solid #ef4444; background: rgba(239,68,68,0.05);">
+          <h3 style="color:#ef4444; display:flex; align-items:center; gap:8px;">⚠️ Alertas Importantes</h3>
+          <ul style="margin-top:12px; padding-left:20px; color:#b91c1c;">
+            ${lateOrders.length > 0 ? `<li><strong>${lateOrders.length}</strong> pedidos atrasados!</li>` : ''}
+            ${prontosParaEnvio > 0 ? `<li><strong>${prontosParaEnvio}</strong> pedidos prontos para envio.</li>` : ''}
+          </ul>
+        </div>
+        ` : ''}
+
+        ${prontosParaEnvio > 0 ? `
+        <div class="panel">
+          <h3>Prontos para Envio</h3>
+          <div class="list" style="max-height: 400px; overflow-y: auto;">
+            ${renderDashboardRecentOrders(activeOrders.filter(o => getOrderWorkflowStatus(o) === "Postagem"))}
+          </div>
+        </div>
+        ` : ''}
+
       </div>
+
     </div>
   `;
+  
+  const searchInput = document.getElementById("dashboardSearch");
+  if (searchInput) {
+     searchInput.addEventListener("input", (e) => {
+        const term = e.target.value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (!term) {
+           document.getElementById("dashboardRecentOrdersList").innerHTML = renderDashboardRecentOrders(activeOrders.slice(0, 6));
+           return;
+        }
+        const filtered = activeOrders.filter(o => 
+           o.id.toLowerCase().includes(term) ||
+           o.client.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(term) ||
+           (o.whatsapp && o.whatsapp.replace(/\D/g,"").includes(term.replace(/\D/g,"")))
+        ).slice(0, 10);
+        document.getElementById("dashboardRecentOrdersList").innerHTML = renderDashboardRecentOrders(filtered);
+     });
+  }
+}
+
+function renderDashboardRecentOrders(orders) {
+  if (!orders.length) return `<p class="muted" style="padding:12px 0">Nenhum pedido encontrado.</p>`;
+  return orders.map((order) => {
+    let petThumb = `<div style="width:48px;height:48px;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:grid;place-items:center;font-weight:900;font-size:16px;flex-shrink:0;">${petInitials(order.client)}</div>`;
+    if (order.petPhoto) {
+       petThumb = `<div style="width:48px;height:48px;border-radius:12px;background-image:url('${order.petPhoto}');background-size:cover;background-position:center;border:1px solid var(--line);flex-shrink:0;"></div>`;
+    }
+    return `
+    <div class="soft-row" style="align-items:center; padding: 12px 14px; gap: 14px; flex-wrap: wrap;">
+      <div style="display:flex; align-items:center; gap: 14px; flex: 1 1 200px;">
+        ${petThumb}
+        <div style="display:flex; flex-direction:column; overflow:hidden;">
+          <strong style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(order.client)} <span class="eyebrow" style="margin-left:6px">${order.id}</span></strong>
+          <small style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:0.8; margin-top:2px;">${escapeHtml(order.product)}</small>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap: 8px;">
+        <span class="status-pill ${statusClass(order.status)}">${order.status}</span>
+        ${order.whatsapp ? `<a href="https://wa.me/55${order.whatsapp.replace(/\D/g, '')}" target="_blank" class="mini-button" title="WhatsApp">💬</a>` : ''}
+        <button class="mini-button" data-detail="${order.id}">Abrir</button>
+      </div>
+    </div>`;
+  }).join("");
 }
 
 function metric(label, value, helper) {
@@ -980,6 +1053,7 @@ function advanceClientGroupIfComplete(groupOrders, status) {
   if (!done || !nextStatus) return;
   groupOrders.forEach((order) => {
     order.status = nextStatus;
+    delete order.orderStatus;
     order[step.key] = [];
     order.history.unshift({ at: formatDateTime(new Date()), text: `Grupo avançou para ${nextStatus}` });
   });
@@ -1503,7 +1577,9 @@ function generateDonutChartSVG(data) {
   `;
 }
 
-function renderReports() {
+function renderFinance() {
+  const data = metrics();
+  const currentYear = new Date().getFullYear();
   const { start, end } = getReportDates(state.reportPeriod);
   const { start: prevStart, end: prevEnd } = getCompareDates(start, end);
   
@@ -1665,7 +1741,16 @@ function renderReports() {
 
   const clientColors = ["#fee2e2", "#ffedd5", "#fef3c7", "#dcfce7", "#e0f2fe", "#f3e8ff"];
 
-  document.getElementById("reportsView").innerHTML = `
+  document.getElementById("financeView").innerHTML = `
+    <div class="grid metric-grid" style="margin-bottom: 24px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+      ${metric("Faturamento do mês", money(data.revenue), "Vendas ativas")}
+      ${metric("Faturamento do Ano", money(data.yearlyRevenue), `Total em ${currentYear}`)}
+      ${metric("Despesas do mês", money(data.expenses), "Operação e marketing")}
+      ${metric("Lucro estimado", money(data.profitAfterExpenses), "Líquido aproximado")}
+      ${metric("Ticket Médio", money(data.ticketMedio), "Bruto por pedido")}
+      ${metric("Tempo de Máquina", `${data.totalMachineTime.toFixed(1)}h`, "Uso total ativo")}
+    </div>
+
     <div class="panel reports-panel">
       <!-- Toolbar Filters -->
       <div class="reports-toolbar-section">
@@ -2255,6 +2340,7 @@ function getOrderWorkflowStatus(order) {
   if (
     normalized.includes("postag") ||
     normalized.includes("pronto para envio") ||
+    (normalized.includes("pronto") && !normalized.includes("foto")) ||
     normalized.includes("embal") ||
     normalized.includes("expedi") ||
     normalized.includes("saida")
@@ -2508,8 +2594,37 @@ function updateStatus(id, status) {
 
 async function fileToDataUrl(file) {
   return new Promise((resolve) => {
+    if (!file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+      return;
+    }
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+        const max = 600;
+        if (width > max || height > max) {
+          if (width > height) {
+            height = Math.round((height * max) / width);
+            width = max;
+          } else {
+            width = Math.round((width * max) / height);
+            height = max;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.6));
+      };
+      img.src = e.target.result;
+    };
     reader.readAsDataURL(file);
   });
 }
@@ -3014,6 +3129,7 @@ function bindEvents() {
         if (!sourceOrders.length || payload.status === status) return;
         sourceOrders.forEach((order) => {
           order.status = status;
+          delete order.orderStatus;
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
           order.history.unshift({ at: formatDateTime(new Date()), text: `Grupo movido para ${status} via quadro` });
         });
@@ -3025,6 +3141,7 @@ function bindEvents() {
         const order = state.orders.find((item) => item.id === payload.orderId);
         if (order && status && order.status !== status) {
           order.status = status;
+          delete order.orderStatus;
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
           order.history.unshift({ at: formatDateTime(new Date()), text: `Status movido para ${status} via quadro` });
           save();
@@ -3099,14 +3216,17 @@ function bindEvents() {
     const form = event.currentTarget;
     const data = Object.fromEntries(new FormData(form));
     const product = state.products.find((item) => item.name === data.product) || state.products[0];
-    const shippingExpense = state.expenses.find((expense) => expense.id === data.shippingExpenseId && expense.category === "Frete");
-    const shippingVal = shippingExpense ? Number(shippingExpense.amount || 0) : 0;
+    let shippingVal = 0;
+    if (data.shippingUF && state.shippingRates && state.shippingRates[data.shippingUF] !== undefined) {
+      shippingVal = Number(state.shippingRates[data.shippingUF]);
+    }
     const initialStatus = state.productionStatuses[0] || "Recebido";
     const order = makeOrder(data.client, data.whatsapp, data.product, Number(data.quantity), product.unitValue, shippingVal, data.payment, 0, 5, initialStatus, data.tracking, product.name.includes("Combo") ? 4.8 : 3.2, product.name.includes("Combo") ? 38 : 22, data.notes);
     order.date = data.date || "";
     order.actualDelivery = "";
-    order.shippingExpenseId = shippingExpense ? shippingExpense.id : "";
-    order.shippingExpenseName = shippingExpense ? shippingExpense.name : "";
+    order.shippingExpenseId = "";
+    order.shippingExpenseName = "";
+    order.shippingUF = data.shippingUF || "";
     order.shippingExcludedFromReport = true;
     order.petName = String(data.petName || "").trim();
     order.petNames = normalizePetNames(data.petNames || data.petName, Number(data.quantity || 1), order.petName || petNameFromClient(data.client));
@@ -3196,20 +3316,10 @@ function hydrateForm() {
   if (select) {
     select.innerHTML = state.products.map((product) => `<option value="${product.name}">${product.name} - ${money(product.unitValue)}</option>`).join("");
   }
-  const shippingSelect = document.querySelector("[name='shippingExpenseId']");
-  if (shippingSelect) {
-    const shippingExpenses = state.expenses
-      .filter((expense) => expense.category === "Frete")
-      .slice()
-      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-    shippingSelect.innerHTML = [`<option value="">Selecione uma despesa de frete</option>`]
-      .concat(
-        shippingExpenses.map((expense) => {
-          const label = `${expense.name} - ${money(expense.amount)}${expense.date ? ` (${formatDate(expense.date)})` : ""}`;
-          return `<option value="${expense.id}" data-shipping-amount="${expense.amount}">${escapeHtml(label)}</option>`;
-        })
-      )
-      .join("");
+  const ufSelect = document.querySelector("[name='shippingUF']");
+  if (ufSelect) {
+    ufSelect.innerHTML = `<option value="">Selecione um Estado</option>` +
+      Object.entries(state.shippingRates || {}).map(([uf, rate]) => `<option value="${uf}">${uf} - ${money(rate)}</option>`).join("");
   }
 }
 if (localStorage.getItem("mpa:theme_v2") === "dark") document.body.classList.add("dark");
