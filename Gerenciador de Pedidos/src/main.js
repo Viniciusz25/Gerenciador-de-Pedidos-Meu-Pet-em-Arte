@@ -578,10 +578,6 @@ function setView(view) {
   
   const novosPedidos = activeOrders.filter(o => getOrderWorkflowStatus(o) === "Novo Pedido").length;
   const emProducao = activeOrders.filter(o => getOrderWorkflowStatus(o) === "Produção").length;
-  const aguardandoCliente = activeOrders.filter(o => {
-     const s = String(o.status||"").toLowerCase();
-     return s.includes("aguardando") || s.includes("cliente");
-  }).length;
   const prontosParaEnvio = activeOrders.filter(o => getOrderWorkflowStatus(o) === "Postagem").length;
   const enviadosHoje = activeOrders.filter(o => {
      const sentHistory = o.history && o.history.find(h => h.text.toLowerCase().includes("enviado"));
@@ -614,7 +610,6 @@ function setView(view) {
     <div class="grid metric-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
       ${metric("Novos Pedidos", novosPedidos, "Aguardando início")}
       ${metric("Em Produção", emProducao, "No ateliê")}
-      ${metric("Aguardando Aprovação", aguardandoCliente, "Feedback pendente")}
       ${metric("Prontos para Envio", prontosParaEnvio, "Aguardando coleta")}
       ${metric("Enviados Hoje", enviadosHoje, "Despachados")}
     </div>
@@ -1068,7 +1063,8 @@ function renderProduction() {
 
   // Map legacy statuses
   state.orders.forEach(order => {
-    if (order.status && !state.productionStatuses.includes(order.status) && !["Enviado", "Entregue", "Cancelado"].includes(order.status)) {
+    const shipping = state.shippingStatuses || ["Pronto", "Postagem", "Enviado", "Entregue"];
+    if (order.status && !state.productionStatuses.includes(order.status) && !shipping.includes(order.status) && order.status !== "Cancelado") {
       order.status = mapLegacyStatus(order.status);
     }
   });
@@ -1257,16 +1253,19 @@ function renderProduction() {
                                 </span>
                                 <b>${order.quantity}x</b>
                               </button>
-                              ${stepInfo ? `
-                                <div class="kanban-mini-order-pets">
-                                  ${petNames.map((petName, index) => `
-                                    <label class="kanban-mini-order-check">
-                                      <input type="checkbox" data-production-step="${status}" data-production-order="${order.id}" data-production-index="${index}" ${flags[index] ? "checked" : ""} />
-                                      <span>${escapeHtml(petName)} - ${stepInfo.label}</span>
-                                    </label>
-                                  `).join("")}
-                                </div>
-                              ` : ""}
+                              <div class="kanban-mini-order-pets" style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+                                ${petNames.map((petName, index) => {
+                                  const photoUrl = order.petPhotos ? order.petPhotos[index] : (index === 0 ? order.petPhoto : "");
+                                  const thumbStyle = photoUrl ? `background-image:url('${photoUrl}'); background-size:cover; background-position:center; width:28px; height:28px; border-radius:50%; margin-right:8px; display:inline-block; flex-shrink:0; border:1px solid var(--line);` : `width:28px; height:28px; border-radius:50%; margin-right:8px; display:inline-block; background-color:var(--surface-solid); flex-shrink:0; border:1px solid var(--line);`;
+                                  return `
+                                  <label class="kanban-mini-order-check" style="display:flex; align-items:center; padding: 4px; border-radius: 6px; cursor: ${stepInfo ? 'pointer' : 'default'};">
+                                    ${stepInfo ? `<input type="checkbox" data-production-step="${status}" data-production-order="${order.id}" data-production-index="${index}" ${flags[index] ? "checked" : ""} style="margin-right:12px; width:16px; height:16px;" />` : ''}
+                                    <div style="${thumbStyle}"></div>
+                                    <span style="flex:1; font-size: 0.9rem; font-weight: 500;">${escapeHtml(petName)}${stepInfo ? ` <span style="font-weight:normal; font-size:0.8rem; color:var(--text-muted); opacity: 0.8;">- ${stepInfo.label}</span>` : ""}</span>
+                                  </label>
+                                  `;
+                                }).join("")}
+                              </div>
                             </div>
                               `;
                             })()}
@@ -2170,12 +2169,17 @@ function openDetails(id) {
         </div>
         <button class="ghost-button" type="button" data-close-detail>Fechar</button>
       </div>
-      <div class="grid detail-grid">
-        <div class="asset-card">
-          <span>Foto do pet</span>
-          ${assetPreview(order.petPhoto, petInitials(order.client))}
-          <input type="file" accept="image/*" data-asset="${order.id}" data-field="petPhoto">
-        </div>
+      <div class="grid detail-grid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));">
+        ${petList.map((petName, i) => {
+          const photoUrl = order.petPhotos ? order.petPhotos[i] : (i === 0 ? order.petPhoto : "");
+          return `
+          <div class="asset-card">
+            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Foto: ${escapeHtml(petName)}</span>
+            ${assetPreview(photoUrl, petInitials(order.client))}
+            <input type="file" accept="image/*" data-asset-multi="${order.id}" data-asset-index="${i}">
+          </div>
+          `;
+        }).join("")}
         <div class="asset-card">
           <span>Arte gerada</span>
           ${assetPreview(order.generatedArt, "ART")}
@@ -3043,6 +3047,7 @@ function bindEvents() {
         if (product) order.unitValue = product.unitValue;
       }
       refreshOrderTotals(order);
+      order.history = order.history || [];
       order.history.unshift({ at: formatDateTime(new Date()), text: `Campo ${field} atualizado` });
       save();
       render();
@@ -3063,6 +3068,19 @@ function bindEvents() {
       order[event.target.dataset.field] = await fileToDataUrl(file);
       order[`${event.target.dataset.field}Name`] = file.name;
       order.history.unshift({ at: formatDateTime(new Date()), text: "Imagem adicionada ao pedido" });
+      save();
+      openDetails(order.id);
+    }
+    if (event.target.dataset.assetMulti !== undefined) {
+      const order = state.orders.find((item) => item.id === event.target.dataset.assetMulti);
+      const index = Number(event.target.dataset.assetIndex);
+      const file = event.target.files[0];
+      if (!file) return;
+      if (!order.petPhotos) order.petPhotos = [order.petPhoto || ""];
+      const url = await fileToDataUrl(file);
+      order.petPhotos[index] = url;
+      if (index === 0) order.petPhoto = url; // sync first photo
+      order.history.unshift({ at: formatDateTime(new Date()), text: "Foto do pet atualizada" });
       save();
       openDetails(order.id);
     }
@@ -3131,6 +3149,7 @@ function bindEvents() {
           order.status = status;
           delete order.orderStatus;
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
+          order.history = order.history || [];
           order.history.unshift({ at: formatDateTime(new Date()), text: `Grupo movido para ${status} via quadro` });
         });
         save();
@@ -3143,6 +3162,7 @@ function bindEvents() {
           order.status = status;
           delete order.orderStatus;
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
+          order.history = order.history || [];
           order.history.unshift({ at: formatDateTime(new Date()), text: `Status movido para ${status} via quadro` });
           save();
           renderProduction();
@@ -3160,26 +3180,125 @@ function bindEvents() {
     if (file) await handleSpreadsheetFile(file);
   });
 
+  function renderPetPhotoInputs() {
+    const form = document.getElementById("orderForm");
+    if (!form) return;
+    const petNameVal = form.petName?.value || "";
+    const petNamesVal = form.petNames?.value || "";
+    const clientVal = form.client?.value || "";
+    // Usamos 1 aqui para que ele não tente multiplicar os inputs com base no input global readonly
+    const names = normalizePetNames(petNamesVal || petNameVal, 1, petNameVal || petNameFromClient(clientVal));
+    
+    const container = document.getElementById("petPhotosContainer");
+    if (!container) return;
+    
+    // Preserve current data URLs and quantities if possible
+    const currentInputs = Array.from(container.querySelectorAll(".dynamic-pet-photo"));
+    const currentUrls = currentInputs.map(input => input.dataset.url);
+    const currentQtyInputs = Array.from(container.querySelectorAll(".dynamic-pet-qty"));
+    const currentQtys = currentQtyInputs.map(input => input.value);
+    
+    container.innerHTML = "";
+    let initialTotal = 0;
+
+    names.forEach((name, i) => {
+      const group = document.createElement("div");
+      group.className = "pet-photo-group";
+      group.style = "display:flex; flex-direction:column; gap:4px; padding: 12px; border: 1px dashed var(--line); border-radius: 8px;";
+      group.dataset.name = name;
+      
+      const headerRow = document.createElement("div");
+      headerRow.style = "display:flex; justify-content:space-between; align-items:center; gap:8px;";
+      
+      const label = document.createElement("strong");
+      label.textContent = `Pet: ${name}`;
+      label.style.fontSize = "0.95rem";
+      
+      const qtyWrap = document.createElement("div");
+      qtyWrap.style = "display:flex; align-items:center; gap:6px;";
+      const qtyLabel = document.createElement("label");
+      qtyLabel.textContent = "Qtd:";
+      qtyLabel.style.fontSize = "0.85rem";
+      qtyLabel.style.margin = "0";
+      
+      const qtyInput = document.createElement("input");
+      qtyInput.type = "number";
+      qtyInput.min = "1";
+      qtyInput.className = "dynamic-pet-qty";
+      qtyInput.style = "width: 60px; padding: 4px; font-size: 0.9rem;";
+      const savedQty = Number(currentQtys[i]) || 1;
+      qtyInput.value = savedQty;
+      initialTotal += savedQty;
+      
+      qtyWrap.appendChild(qtyLabel);
+      qtyWrap.appendChild(qtyInput);
+      
+      headerRow.appendChild(label);
+      headerRow.appendChild(qtyWrap);
+      
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.className = "dynamic-pet-photo";
+      input.dataset.index = i;
+      input.style.marginTop = "6px";
+      if (currentUrls[i]) input.dataset.url = currentUrls[i];
+      
+      const preview = document.createElement("div");
+      preview.className = "asset-preview empty";
+      preview.style = "display:none; min-height:120px; max-height:120px; margin-top:8px;";
+      if (currentUrls[i]) {
+        preview.style.backgroundImage = `url('${currentUrls[i]}')`;
+        preview.style.display = "block";
+        preview.classList.remove("empty");
+      }
+      
+      input.addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const url = await fileToDataUrl(file);
+          preview.style.backgroundImage = `url('${url}')`;
+          preview.style.display = "block";
+          preview.classList.remove("empty");
+          input.dataset.url = url;
+        } else {
+          preview.style.display = "none";
+          delete input.dataset.url;
+        }
+      });
+      
+      qtyInput.addEventListener("input", () => {
+         const allQtys = Array.from(container.querySelectorAll(".dynamic-pet-qty"));
+         const total = allQtys.reduce((sum, el) => sum + (Number(el.value) || 1), 0);
+         if (form.quantity) form.quantity.value = total;
+      });
+      
+      group.appendChild(headerRow);
+      group.appendChild(input);
+      group.appendChild(preview);
+      container.appendChild(group);
+    });
+    
+    if (form.quantity) form.quantity.value = initialTotal || 1;
+  }
+
+  const orderFormEl = document.getElementById("orderForm");
+  if (orderFormEl) {
+    orderFormEl.petName?.addEventListener("input", renderPetPhotoInputs);
+    orderFormEl.petNames?.addEventListener("input", renderPetPhotoInputs);
+    orderFormEl.client?.addEventListener("input", renderPetPhotoInputs);
+    // Removemos quantity listener pois ela é readonly agora
+  }
+
   document.getElementById("newOrderButton").addEventListener("click", () => {
-    document.getElementById("newOrderPhotoPreview").style.display = "none";
+    document.getElementById("orderForm").reset();
+    renderPetPhotoInputs();
     document.getElementById("orderModal").showModal();
   });
   document.getElementById("closeOrderModal").addEventListener("click", () => document.getElementById("orderModal").close());
   document.getElementById("themeToggle").addEventListener("click", () => {
     document.body.classList.toggle("dark");
     localStorage.setItem("mpa:theme_v2", document.body.classList.contains("dark") ? "dark" : "light");
-  });
-  document.getElementById("orderForm").photo.addEventListener("change", async (event) => {
-    const file = event.target.files[0];
-    const preview = document.getElementById("newOrderPhotoPreview");
-    if (file) {
-      const url = await fileToDataUrl(file);
-      preview.style.backgroundImage = `url('${url}')`;
-      preview.style.display = "block";
-      preview.classList.remove("empty");
-    } else {
-      preview.style.display = "none";
-    }
   });
   document.body.addEventListener("click", (event) => {
     if (event.target.id === "confirmImport") confirmSpreadsheetImport();
@@ -3221,7 +3340,7 @@ function bindEvents() {
       shippingVal = Number(state.shippingRates[data.shippingUF]);
     }
     const initialStatus = state.productionStatuses[0] || "Recebido";
-    const order = makeOrder(data.client, data.whatsapp, data.product, Number(data.quantity), product.unitValue, shippingVal, data.payment, 0, 5, initialStatus, data.tracking, product.name.includes("Combo") ? 4.8 : 3.2, product.name.includes("Combo") ? 38 : 22, data.notes);
+    const order = makeOrder(data.client, data.whatsapp, data.product, 1, product.unitValue, shippingVal, data.payment, 0, 5, initialStatus, data.tracking, product.name.includes("Combo") ? 4.8 : 3.2, product.name.includes("Combo") ? 38 : 22, data.notes);
     order.date = data.date || "";
     order.actualDelivery = "";
     order.shippingExpenseId = "";
@@ -3229,13 +3348,46 @@ function bindEvents() {
     order.shippingUF = data.shippingUF || "";
     order.shippingExcludedFromReport = true;
     order.petName = String(data.petName || "").trim();
-    order.petNames = normalizePetNames(data.petNames || data.petName, Number(data.quantity || 1), order.petName || petNameFromClient(data.client));
     order.orderStatus = "Novo Pedido";
-    order.petPhoto = form.photo.files[0] ? await fileToDataUrl(form.photo.files[0]) : "";
+    
+    let totalQty = 0;
+    const finalPetNames = [];
+    const finalPetPhotos = [];
+    const photoGroups = Array.from(document.querySelectorAll(".pet-photo-group"));
+    
+    if (photoGroups.length) {
+      for (const group of photoGroups) {
+        const input = group.querySelector(".dynamic-pet-photo");
+        const qtyInput = group.querySelector(".dynamic-pet-qty");
+        const nameLabel = group.dataset.name || "Pet";
+        const qty = Number(qtyInput.value) || 1;
+        const url = input.dataset.url || "";
+        
+        totalQty += qty;
+        for (let i = 0; i < qty; i++) {
+          finalPetNames.push(nameLabel);
+          finalPetPhotos.push(url);
+        }
+      }
+    } else {
+      // Fallback
+      totalQty = 1;
+      finalPetNames.push(order.petName || petNameFromClient(order.client));
+      finalPetPhotos.push("");
+    }
+    
+    order.petNames = finalPetNames;
+    order.petPhotos = finalPetPhotos;
+    order.petPhoto = order.petPhotos[0] || ""; // backward compatibility
+    
+    // Atualizar as propriedades afetadas pela quantidade
+    order.quantity = totalQty;
+    order.totalSale = order.quantity * order.unitValue;
+    order.totalWithShipping = order.totalSale + order.shipping;
+
     state.orders.unshift(order);
     save();
     form.reset();
-    document.getElementById("newOrderPhotoPreview").style.display = "none";
     document.getElementById("orderModal").close();
     setView("orders");
     render();
