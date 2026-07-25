@@ -66,7 +66,7 @@ const defaultShippingStatuses = [
 ];
 
 const state = {
-  orders: load("orders_v2", seedOrders()),
+  orders: [],
   expenses: load("expenses_v1", seedExpenses()),
   products: load("products_v1", defaultProducts),
   productionStatuses: load("production_statuses_v1", defaultProductionStatuses),
@@ -171,6 +171,43 @@ function nextExpenseId() {
   return `EXP-${String(Math.max(0, ...numbers) + 1).padStart(3, "0")}`;
 }
 
+const idb = {
+  db: null,
+  async init() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open("mpa_db", 1);
+      request.onupgradeneeded = (e) => {
+        e.target.result.createObjectStore("keyval");
+      };
+      request.onsuccess = (e) => {
+        this.db = e.target.result;
+        resolve();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  },
+  async get(key) {
+    if (!this.db) await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction("keyval", "readonly");
+      const store = tx.objectStore("keyval");
+      const request = store.get(key);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  },
+  async set(key, val) {
+    if (!this.db) await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction("keyval", "readwrite");
+      const store = tx.objectStore("keyval");
+      const request = store.put(val, key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+};
+
 function load(key, fallback) {
   try {
     return JSON.parse(localStorage.getItem(`mpa:${key}`)) || fallback;
@@ -181,7 +218,10 @@ function load(key, fallback) {
 
 function save() {
   try {
-    localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
+    idb.set("orders_v2", state.orders).catch(err => {
+      console.error("Erro ao salvar no IndexedDB:", err);
+      alert("Erro ao salvar no banco de dados. " + err.message);
+    });
     runAutoBackup();
   } catch (err) {
     if (err.name === "QuotaExceededError") {
@@ -570,7 +610,9 @@ function setView(view) {
   document.getElementById(`${targetView}View`).classList.add("active");
   document.getElementById("viewTitle").textContent = document.getElementById(`${targetView}View`).dataset.title;
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === targetView));
-  // Re-render the newly function renderDashboard() {
+}
+
+function renderDashboard() {
   const currentMonth = today.toISOString().slice(0, 7);
   const activeOrders = state.orders.filter((order) => order.status !== "Cancelado");
   const currentMonthOrders = activeOrders.filter((order) => order.date && order.date.startsWith(currentMonth));
@@ -3474,15 +3516,36 @@ function hydrateForm() {
       Object.entries(state.shippingRates || {}).map(([uf, rate]) => `<option value="${uf}">${uf} - ${money(rate)}</option>`).join("");
   }
 }
-if (localStorage.getItem("mpa:theme_v2") === "dark") document.body.classList.add("dark");
-hydrateForm();
-bindEvents();
-render();
-setView("dashboard");
+async function boot() {
+  try {
+    await idb.init();
+    let orders = await idb.get("orders_v2");
+    if (!orders) {
+      orders = load("orders_v2", null);
+      if (orders) {
+        await idb.set("orders_v2", orders);
+      } else {
+        orders = typeof seedOrders === "function" ? seedOrders() : [];
+      }
+    }
+    state.orders = orders;
+  } catch (err) {
+    console.error("IndexedDB error, falling back to localStorage", err);
+    state.orders = load("orders_v2", typeof seedOrders === "function" ? seedOrders() : []);
+  }
 
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  if (localStorage.getItem("mpa:theme_v2") === "dark") document.body.classList.add("dark");
+  hydrateForm();
+  bindEvents();
+  render();
+  setView("dashboard");
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  }
 }
+
+boot();
 
 function renderShipping() {
   state.shippingSearch = state.shippingSearch || "";
