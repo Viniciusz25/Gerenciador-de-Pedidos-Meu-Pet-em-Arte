@@ -1,0 +1,9 @@
+{
+  "name": "Meu Pet em Arte - Pedidos de Chaveiros",
+  "short_name": "Meu Pet",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#fff4df",
+  "theme_color": "#2b1713",
+  "icons": []
+}

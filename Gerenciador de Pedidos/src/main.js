@@ -1,3 +1,5 @@
+import { supabase } from './supabase.js';
+
 const STATUS = [
   "Novo Pedido",
   "Em Producao",
@@ -172,40 +174,8 @@ function nextExpenseId() {
 }
 
 const idb = {
-  db: null,
-  async init() {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open("mpa_db", 1);
-      request.onupgradeneeded = (e) => {
-        e.target.result.createObjectStore("keyval");
-      };
-      request.onsuccess = (e) => {
-        this.db = e.target.result;
-        resolve();
-      };
-      request.onerror = () => reject(request.error);
-    });
-  },
-  async get(key) {
-    if (!this.db) await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction("keyval", "readonly");
-      const store = tx.objectStore("keyval");
-      const request = store.get(key);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  },
-  async set(key, val) {
-    if (!this.db) await this.init();
-    return new Promise((resolve, reject) => {
-      const tx = this.db.transaction("keyval", "readwrite");
-      const store = tx.objectStore("keyval");
-      const request = store.put(val, key);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
+  async get(key) { return null; },
+  async set(key, val) {}
 };
 
 function load(key, fallback) {
@@ -216,33 +186,44 @@ function load(key, fallback) {
   }
 }
 
-function save() {
+async function saveSettings(key, value) {
   try {
-    idb.set("orders_v2", state.orders).catch(err => {
-      console.error("Erro ao salvar no IndexedDB:", err);
-      alert("Erro ao salvar no banco de dados. " + err.message);
-    });
+    await supabase.from('settings').upsert({ key, value, updated_at: new Date().toISOString() });
+  } catch (err) { console.error(err); }
+}
+
+async function save() {
+  try {
+    if (state.orders.length > 0) {
+      await supabase.from('orders').upsert(state.orders);
+    }
     runAutoBackup();
   } catch (err) {
-    if (err.name === "QuotaExceededError") {
-      alert("Ops! O armazenamento do navegador estourou (limite de fotos/dados atingido). Seu pedido não pôde ser salvo. Limpe ou faça backup de pedidos antigos para liberar espaço!");
-      console.error(err);
-    }
+    console.error("Erro ao salvar no Supabase:", err);
+    alert("Erro ao salvar no banco de dados (Supabase). " + err.message);
   }
 }
 
-function saveExpenses() {
-  localStorage.setItem("mpa:expenses_v1", JSON.stringify(state.expenses));
-  runAutoBackup();
+async function saveExpenses() {
+  try {
+    if (state.expenses.length > 0) {
+      await supabase.from('expenses').upsert(state.expenses);
+    }
+    runAutoBackup();
+  } catch (err) { console.error("Erro ao salvar despesas", err); }
 }
 
-function saveProducts() {
-  localStorage.setItem("mpa:products_v1", JSON.stringify(state.products));
-  runAutoBackup();
+async function saveProducts() {
+  try {
+    if (state.products.length > 0) {
+      await supabase.from('products').upsert(state.products);
+    }
+    runAutoBackup();
+  } catch (err) { console.error("Erro ao salvar produtos", err); }
 }
 
 function saveShippingRates() {
-  localStorage.setItem("mpa:shipping_rates", JSON.stringify(state.shippingRates || {}));
+  saveSettings('shipping_rates', state.shippingRates || {});
   runAutoBackup();
 }
 
@@ -3132,7 +3113,32 @@ function bindEvents() {
     }
     if (event.target.id === "restoreBackupInput") {
       const file = event.target.files[0];
-      if (file) await restoreBackup(file);
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const backup = JSON.parse(e.target.result);
+            if (backup.orders && backup.orders.length > 0) {
+              const { error } = await supabase.from('orders').upsert(backup.orders);
+              if (error) throw new Error("Erro em Orders: " + error.message);
+            }
+            if (backup.expenses && backup.expenses.length > 0) {
+              const { error } = await supabase.from('expenses').upsert(backup.expenses);
+              if (error) throw new Error("Erro em Expenses: " + error.message);
+            }
+            if (backup.products && backup.products.length > 0) {
+              const { error } = await supabase.from('products').upsert(backup.products);
+              if (error) throw new Error("Erro em Products: " + error.message);
+            }
+            alert("Backup importado com sucesso para o Supabase! Recarregando...");
+            window.location.reload();
+          } catch (err) {
+            console.error(err);
+            alert("Erro ao importar: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      }
       event.target.value = "";
     }
   });
@@ -3518,20 +3524,25 @@ function hydrateForm() {
 }
 async function boot() {
   try {
-    await idb.init();
-    let orders = await idb.get("orders_v2");
-    if (!orders) {
-      orders = load("orders_v2", null);
-      if (orders) {
-        await idb.set("orders_v2", orders);
-      } else {
-        orders = typeof seedOrders === "function" ? seedOrders() : [];
-      }
+    const { data: oData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+    if (oData) state.orders = oData;
+
+    const { data: eData } = await supabase.from('expenses').select('*').order('created_at', { ascending: false });
+    if (eData && eData.length > 0) state.expenses = eData;
+    else state.expenses = load("expenses_v1", typeof seedExpenses === "function" ? seedExpenses() : []);
+
+    const { data: pData } = await supabase.from('products').select('*');
+    if (pData && pData.length > 0) state.products = pData;
+    else state.products = load("products_v1", defaultProducts);
+
+    const { data: sData } = await supabase.from('settings').select('*');
+    if (sData) {
+      sData.forEach(s => {
+        if (s.key === 'shipping_rates') state.shippingRates = s.value;
+      });
     }
-    state.orders = orders;
   } catch (err) {
-    console.error("IndexedDB error, falling back to localStorage", err);
-    state.orders = load("orders_v2", typeof seedOrders === "function" ? seedOrders() : []);
+    console.error("Erro ao inicializar Supabase", err);
   }
 
   if (localStorage.getItem("mpa:theme_v2") === "dark") document.body.classList.add("dark");
