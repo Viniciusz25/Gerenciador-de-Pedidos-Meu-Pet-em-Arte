@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="pt-BR">
-  <head>
+  <head><script>window.addEventListener("error", function(e) { alert("Error: " + e.message + " at " + e.filename + ":" + e.lineno); }); window.addEventListener("unhandledrejection", function(e) { alert("Unhandled Rejection: " + (e.reason && e.reason.message ? e.reason.message : e.reason)); });</script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#2b1713" />
@@ -10,10 +10,35 @@
     />
     <title>MEU PET EM ARTE | Pedidos</title>
     <link rel="manifest" href="manifest.json" />
+    <link rel="apple-touch-icon" href="logo-192.png" />
     <link rel="stylesheet" href="styles.css?v=products-v2" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="loginScreen" class="login-screen">
+      <div class="login-card panel">
+        <div class="login-brand">
+          <img src="assets/logo-meu-pet-em-arte.png" alt="Logo Meu Pet em Arte" />
+          <h2>Acesso Restrito</h2>
+          <p class="muted">Gerenciador de Pedidos</p>
+        </div>
+        <form id="loginForm" class="form-grid">
+          <label class="wide">E-mail
+            <input type="email" name="email" required placeholder="seu@email.com" />
+          </label>
+          <label class="wide">Senha
+            <input type="password" name="password" required placeholder="••••••••" />
+          </label>
+          <div class="wide">
+            <button class="primary-button" type="submit" style="width: 100%;">Entrar no painel</button>
+          </div>
+          <div id="loginError" class="login-error wide" style="display: none; color: var(--red); font-size: 0.9rem; text-align: center; margin-top: 8px;">
+            Credenciais incorretas
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="app-shell" id="appShell" style="display: none;">
       <aside class="sidebar" aria-label="Menu principal">
         <div class="brand">
           <div class="brand-mark">
@@ -29,6 +54,7 @@
           <button class="nav-item active" data-view="dashboard">Dashboard</button>
           <button class="nav-item" data-view="orders">Pedidos</button>
           <button class="nav-item" data-view="production">Controle de Produção</button>
+          <button class="nav-item" data-view="labels">Gerar Etiquetas 🏷️</button>
           <button class="nav-item" data-view="shipping">Controle de Envio</button>
           <button class="nav-item" data-view="products">Produto</button>
           <button class="nav-item" data-view="expenses">Despesas</button>
@@ -36,6 +62,8 @@
 
           <button class="nav-item" data-view="import">Importacao</button>
           <button class="nav-item" data-view="admin">Admin</button>
+          
+          <button class="nav-item danger-text" id="logoutBtn" type="button" style="margin-top: auto;">Sair</button>
         </nav>
 
         <div class="sidebar-card" id="productionQueueSummary">
@@ -60,6 +88,7 @@
         <section class="view active" id="dashboardView" data-title="Dashboard"></section>
         <section class="view" id="ordersView" data-title="Pedidos"></section>
         <section class="view" id="productionView" data-title="Controle de Produção"></section>
+        <section class="view" id="labelsView" data-title="Gerar Etiquetas"></section>
         <section class="view" id="shippingView" data-title="Controle de Envio"></section>
         <section class="view" id="productsView" data-title="Produto"></section>
         <section class="view" id="expensesView" data-title="Despesas"></section>
@@ -73,10 +102,12 @@
         <button class="mobile-item active" data-view="dashboard">Inicio</button>
         <button class="mobile-item" data-view="orders">Pedidos</button>
         <button class="mobile-item" data-view="production">Producao</button>
+        <button class="mobile-item" data-view="labels">Etiquetas</button>
         <button class="mobile-item" data-view="shipping">Envio</button>
         <button class="mobile-item" data-view="products">Produto</button>
         <button class="mobile-item" data-view="expenses">Despesas</button>
         <button class="mobile-item" data-view="finance">Financeiro</button>
+        <button class="mobile-item" id="mobileLogoutBtn" type="button" style="color: var(--red);">Sair</button>
       </nav>
     </div>
 
@@ -100,12 +131,8 @@
               <input required name="client" placeholder="Nome do cliente" autocomplete="name" />
             </label>
             <label>
-              Nome do pet
-              <input name="petName" placeholder="Nome do pet" autocomplete="off" />
-            </label>
-            <label class="wide">
-              Nomes dos pets
-              <textarea name="petNames" rows="3" placeholder="Um nome por linha ou separado por vírgula"></textarea>
+              CPF
+              <input name="cpf" placeholder="000.000.000-00" autocomplete="off" maxlength="14" />
             </label>
             <label>
               WhatsApp
@@ -125,9 +152,68 @@
 
         <div class="modal-section">
           <div class="section-head">
+            <h3>Endereço de entrega</h3>
+          </div>
+          <div class="form-grid order-form-grid">
+            <label>
+              CEP
+              <div class="cep-input-wrapper">
+                <input name="cep" id="orderCepInput" placeholder="00000-000" maxlength="9" autocomplete="postal-code" />
+                <span class="cep-loading-spinner" id="orderCepSpinner" style="display: none;">⏳ Buscando...</span>
+              </div>
+              <small class="cep-feedback" id="orderCepFeedback"></small>
+            </label>
+            <label class="wide-two">
+              Rua / Logradouro
+              <input name="address" id="orderAddressInput" placeholder="Rua, Avenida, Alameda..." autocomplete="street-address" />
+            </label>
+            <label>
+              Número
+              <input name="number" id="orderNumberInput" placeholder="123 ou S/N" autocomplete="off" />
+            </label>
+            <label>
+              Complemento
+              <input name="complement" placeholder="Apto, Bloco, Casa (opcional)" />
+            </label>
+            <label>
+              Bairro
+              <input name="neighborhood" id="orderNeighborhoodInput" placeholder="Bairro" />
+            </label>
+            <label>
+              Cidade
+              <input name="city" id="orderCityInput" placeholder="Cidade" autocomplete="address-level2" />
+            </label>
+            <label>
+              Estado (UF)
+              <select name="state" id="orderStateSelect">
+                <option value="">Selecione</option>
+                <option value="AC">AC</option><option value="AL">AL</option><option value="AP">AP</option>
+                <option value="AM">AM</option><option value="BA">BA</option><option value="CE">CE</option>
+                <option value="DF">DF</option><option value="ES">ES</option><option value="GO">GO</option>
+                <option value="MA">MA</option><option value="MT">MT</option><option value="MS">MS</option>
+                <option value="MG">MG</option><option value="PA">PA</option><option value="PB">PB</option>
+                <option value="PR">PR</option><option value="PE">PE</option><option value="PI">PI</option>
+                <option value="RJ">RJ</option><option value="RN">RN</option><option value="RS">RS</option>
+                <option value="RO">RO</option><option value="RR">RR</option><option value="SC">SC</option>
+                <option value="SP">SP</option><option value="SE">SE</option><option value="TO">TO</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-section">
+          <div class="section-head">
             <h3>Detalhes do pedido</h3>
           </div>
           <div class="form-grid order-form-grid">
+            <label>
+              Nome do pet
+              <input name="petName" placeholder="Nome do pet" autocomplete="off" />
+            </label>
+            <label class="wide-two">
+              Nomes dos pets
+              <textarea name="petNames" rows="2" placeholder="Um nome por linha ou separado por vírgula"></textarea>
+            </label>
             <label>
               Produto
               <select required name="product"></select>
@@ -146,6 +232,20 @@
                 <option value="">Selecione um Estado</option>
               </select>
             </label>
+            <div class="wide superfrete-quote-section">
+              <div class="superfrete-quote-header">
+                <button type="button" id="btnCalcFrete" class="secondary-button superfrete-btn" title="Calcular frete via SuperFrete">
+                  🚚 Calcular Frete SuperFrete
+                </button>
+                <span id="superfreteQuoteSpinner" class="cep-loading-spinner" style="display:none;">⏳ Cotando...</span>
+                <small id="superfreteQuoteFeedback" class="cep-feedback"></small>
+              </div>
+              <div id="superfreteQuoteResults" class="superfrete-quote-results" style="display:none;"></div>
+              <input type="hidden" name="superfreteShippingMethod" id="superfreteShippingMethod" value="" />
+              <input type="hidden" name="superfreteShippingPrice" id="superfreteShippingPrice" value="" />
+              <input type="hidden" name="superfreteDeliveryMin" id="superfreteDeliveryMin" value="" />
+              <input type="hidden" name="superfreteDeliveryMax" id="superfreteDeliveryMax" value="" />
+            </div>
             <label>
               Codigo de rastreio
               <input name="tracking" placeholder="BR000000000BR" />

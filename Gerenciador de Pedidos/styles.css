@@ -3089,3 +3089,455 @@ body.dark .kanban-card-new.overdue {
   font-size: 0.82rem;
   color: var(--muted);
 }
+
+/* Login Screen */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  width: 100%;
+  padding: 24px;
+  background: var(--cream);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  border-radius: var(--radius);
+}
+
+.login-brand {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.login-brand img {
+  height: 64px;
+  width: auto;
+  border-radius: 16px;
+}
+
+.login-brand h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.login-brand p {
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* CEP & CPF Enhancements */
+.wide-two {
+  grid-column: span 2;
+}
+
+@media (max-width: 640px) {
+  .wide-two {
+    grid-column: 1 / -1;
+  }
+}
+
+.cep-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.cep-input-wrapper input {
+  width: 100%;
+}
+
+.cep-loading-spinner {
+  position: absolute;
+  right: 12px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  pointer-events: none;
+  animation: pulse-fade 1s infinite alternate;
+}
+
+@keyframes pulse-fade {
+  0% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.cep-feedback {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  min-height: 1rem;
+  margin-top: 2px;
+  transition: all 0.2s ease;
+}
+
+.cep-feedback.success {
+  color: var(--green);
+}
+
+.cep-feedback.error {
+  color: var(--red);
+}
+
+.detail-address-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ==========================================================================
+   SuperFrete Integration Styles
+   ========================================================================== */
+
+.superfrete-quote-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--brand) 4%, var(--surface-solid));
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  margin-top: 4px;
+}
+
+.superfrete-quote-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.superfrete-btn {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #ffffff;
+  border: none;
+  font-weight: 700;
+  font-size: 0.88rem;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.25);
+  transition: all 0.18s ease;
+}
+
+.superfrete-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.35);
+  filter: brightness(1.08);
+}
+
+.superfrete-quote-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.superfrete-quote-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  color: var(--ink);
+}
+
+.superfrete-quote-card:hover {
+  border-color: var(--brand);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.superfrete-quote-card.selected {
+  border-color: #0284c7;
+  background: color-mix(in srgb, #0284c7 8%, var(--surface));
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.3);
+  position: relative;
+}
+
+.superfrete-quote-card.selected::after {
+  content: "✓";
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: #0284c7;
+}
+
+.quote-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.badge-sedex {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.badge-pac {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.badge-loggi {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.badge-mini {
+  background: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.quote-price {
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: var(--ink);
+  margin-top: 2px;
+}
+
+.quote-deadline {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.quote-discount {
+  font-size: 0.72rem;
+  color: var(--green-dark, #15803d);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--green) 15%, transparent);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ==========================================================================
+   Labels View (Geração de Etiquetas) Styles
+   ========================================================================== */
+
+.labels-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.label-order-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.label-order-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  border-color: var(--brand);
+}
+
+.label-order-card.label-generated {
+  border-left: 4px solid var(--green, #10b981);
+}
+
+.label-order-card.label-pending {
+  border-left: 4px solid var(--yellow, #f59e0b);
+}
+
+.label-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.label-card-client-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+}
+
+.label-pet-photo {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  background-color: var(--surface-solid);
+  background-size: cover;
+  background-position: center;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.label-client-name {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--ink);
+  margin: 2px 0 0;
+  line-height: 1.25;
+}
+
+.label-card-service-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.label-shipping-price {
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.label-card-address-box {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: var(--surface-solid);
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+}
+
+.label-address-text {
+  font-size: 0.85rem;
+  color: var(--ink);
+  margin: 4px 0 0;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+
+.label-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.label-status-badge-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label-badge-success {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #15803d;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.label-badge-pending {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.label-tracking-code {
+  font-family: monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 60%, var(--line));
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.label-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.label-generate-btn {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #fff;
+  border: none;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.25);
+  transition: all 0.16s ease;
+}
+
+.label-generate-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.35);
+}
+
+.label-print-btn {
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 6px 14px;
+  border-radius: 8px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 2px 6px rgba(22, 163, 74, 0.25);
+  transition: all 0.16s ease;
+}
+
+.label-print-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+  box-shadow: 0 4px 10px rgba(22, 163, 74, 0.35);
+}
+
+

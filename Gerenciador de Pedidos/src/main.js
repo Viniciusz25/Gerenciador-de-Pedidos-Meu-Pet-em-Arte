@@ -1,4 +1,5 @@
-import { supabase } from './supabase.js';
+import { supabase, supabaseAuthClient } from './supabase.js';
+import { calcularFrete, criarFrete, finalizarPedido, imprimirEtiqueta, infosPedido, cancelarPedido, getConfig as getSuperfreteConfig, saveConfig as saveSuperfreteConfig } from './superfrete.js';
 
 const STATUS = [
   "Novo Pedido",
@@ -75,6 +76,7 @@ const state = {
   shippingStatuses: load("shipping_statuses_v1", defaultShippingStatuses),
   reportPeriod: "30d",
   reportCompare: "anterior",
+  expensePeriodFilter: "atual",
   reportProduct: "Todos",
   query: "",
   statusFilter: "Todos",
@@ -90,6 +92,17 @@ const state = {
   importFileName: "",
   importSummary: ""
   ,shippingRates: load("shipping_rates", { SP: 14.9 })
+  ,superfreteConfig: load("superfrete_config", {
+    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3ODc2NjExNDEsInN1YiI6IkVNR0dEM1AzUE5hUHZYMUdJQkpsVFZOREtXNzMifQ.BD_cL4gAhkybMnrighonm8zHMJhTptIbko4lS7JExgc",
+    cepOrigem: "08140060",
+    pesoDefault: 0.03,
+    alturaDefault: 2,
+    larguraDefault: 12,
+    comprimentoDefault: 18,
+    sandbox: false,
+    enabled: true
+  })
+  ,superfreteQuotes: []
 };
 
 // viewMode: 'list' or 'cards' (cards = small cards)
@@ -123,14 +136,121 @@ function seedOrders() {
   ];
 }
 
-function makeOrder(client, whatsapp, product, quantity, unitValue, shipping, payment, dateOffset, deliveryOffset, status, tracking, productionTime, material, notes, priority = "Média", petName = "") {
+function formatCpf(value) {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+  if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9, 11)}`;
+}
+
+function formatCep(value) {
+  const digits = String(value || "").replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 5) return digits;
+  return `${digits.slice(0, 5)}-${digits.slice(5, 8)}`;
+}
+
+async function fetchAddressByCep(cep) {
+  const clean = String(cep || "").replace(/\D/g, "");
+  if (clean.length !== 8) return null;
+  try {
+    const res = await fetch(`https://viacep.com.br/ws/${clean}/json/`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.erro) return { erro: true };
+    return {
+      logradouro: data.logradouro || "",
+      bairro: data.bairro || "",
+      localidade: data.localidade || "",
+      uf: data.uf || "",
+      complemento: data.complemento || ""
+    };
+  } catch (err) {
+    console.error("Erro ao buscar CEP:", err);
+    return null;
+  }
+}
+
+async function handleCepLookup(context = "order") {
+  const isOrderModal = context === "order";
+  const cepInput = isOrderModal ? document.getElementById("orderCepInput") : document.getElementById("detailCep");
+  const spinner = isOrderModal ? document.getElementById("orderCepSpinner") : document.getElementById("detailCepSpinner");
+  const feedback = isOrderModal ? document.getElementById("orderCepFeedback") : document.getElementById("detailCepFeedback");
+  const addressInput = isOrderModal ? document.getElementById("orderAddressInput") : document.getElementById("detailAddress");
+  const numberInput = isOrderModal ? document.getElementById("orderNumberInput") : document.getElementById("detailNumber");
+  const neighborhoodInput = isOrderModal ? document.getElementById("orderNeighborhoodInput") : document.getElementById("detailNeighborhood");
+  const cityInput = isOrderModal ? document.getElementById("orderCityInput") : document.getElementById("detailCity");
+  const stateSelect = isOrderModal ? document.getElementById("orderStateSelect") : document.getElementById("detailState");
+  const shippingUFSelect = document.querySelector("[name='shippingUF']");
+
+  if (!cepInput) return;
+  const clean = cepInput.value.replace(/\D/g, "");
+  if (clean.length !== 8) {
+    if (feedback) {
+      feedback.textContent = "";
+      feedback.className = "cep-feedback";
+    }
+    return;
+  }
+
+  if (spinner) spinner.style.display = "inline";
+  if (feedback) {
+    feedback.textContent = "Buscando endereço...";
+    feedback.className = "cep-feedback";
+  }
+
+  const result = await fetchAddressByCep(clean);
+
+  if (spinner) spinner.style.display = "none";
+
+  if (!result || result.erro) {
+    if (feedback) {
+      feedback.textContent = "CEP não localizado. Preencha manualmente.";
+      feedback.className = "cep-feedback error";
+    }
+    return;
+  }
+
+  if (feedback) {
+    feedback.textContent = "Endereço localizado com sucesso!";
+    feedback.className = "cep-feedback success";
+    setTimeout(() => {
+      if (feedback && feedback.classList.contains("success")) feedback.textContent = "";
+    }, 4000);
+  }
+
+  if (addressInput && result.logradouro) addressInput.value = result.logradouro;
+  if (neighborhoodInput && result.bairro) neighborhoodInput.value = result.bairro;
+  if (cityInput && result.localidade) cityInput.value = result.localidade;
+  if (stateSelect && result.uf) {
+    stateSelect.value = result.uf;
+  }
+  if (isOrderModal && shippingUFSelect && result.uf) {
+    const hasOption = Array.from(shippingUFSelect.options).some(o => o.value === result.uf);
+    if (hasOption) shippingUFSelect.value = result.uf;
+  }
+
+  if (numberInput && !numberInput.value) {
+    numberInput.focus();
+  }
+}
+
+function makeOrder(client, whatsapp, product, quantity, unitValue, shipping, payment, dateOffset, deliveryOffset, status, tracking, productionTime, material, notes, priority = "Média", petName = "", cpf = "", cep = "", address = "", number = "", complement = "", neighborhood = "", city = "", stateUF = "") {
   const date = addDays(dateOffset);
   const delivery = addDays(deliveryOffset);
   const totalSale = quantity * unitValue;
   return {
     id: nextInternalCode(date),
     client,
+    cpf: cpf || "",
     whatsapp: whatsapp || "",
+    cep: cep || "",
+    address: address || "",
+    number: number || "",
+    complement: complement || "",
+    neighborhood: neighborhood || "",
+    city: city || "",
+    state: stateUF || "",
     product,
     quantity,
     unitValue,
@@ -140,6 +260,7 @@ function makeOrder(client, whatsapp, product, quantity, unitValue, shipping, pay
     payment,
     date,
     delivery,
+    actualDelivery: "",
     tracking,
     status,
     productionTime,
@@ -147,9 +268,18 @@ function makeOrder(client, whatsapp, product, quantity, unitValue, shipping, pay
     notes,
     priority,
     petName,
+    petNames: [petName || "Pet"],
     petPhoto: "",
+    petPhotos: [""],
     generatedArt: "",
     keychainMockup: "",
+    shippingMethod: "",
+    shippingDeadlineMin: 0,
+    shippingDeadlineMax: 0,
+    superfreteLabelId: "",
+    superfreteLabelUrl: "",
+    superfreteOrderId: "",
+    superfreteStatus: "",
     history: [{ at: formatDateTime(new Date()), text: `Pedido criado com status ${status}` }]
   };
 }
@@ -186,16 +316,94 @@ function load(key, fallback) {
   }
 }
 
+async function batchUpsert(table, items, chunkSize = 5) {
+  if (!items || items.length === 0) return;
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const { error } = await supabase.from(table).upsert(chunk);
+    if (error) throw new Error(error.message);
+  }
+}
+
 async function saveSettings(key, value) {
   try {
     await supabase.from('settings').upsert({ key, value, updated_at: new Date().toISOString() });
   } catch (err) { console.error(err); }
 }
 
-async function save() {
+async function save(target = null) {
   try {
-    if (state.orders.length > 0) {
-      await supabase.from('orders').upsert(state.orders);
+    try {
+      localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
+    } catch (e) {
+      console.warn("Aviso: Limite de armazenamento local excedido. Os dados ainda serão salvos no banco de dados.", e);
+    }
+    const items = target ? (Array.isArray(target) ? target : [target]) : state.orders;
+    if (items.length > 0) {
+      const payload = items.map(o => {
+        const historyCopy = Array.isArray(o.history) ? [...o.history] : [];
+        const extraMeta = {
+          cpf: o.cpf || "",
+          cep: o.cep || "",
+          address: o.address || "",
+          number: o.number || "",
+          complement: o.complement || "",
+          neighborhood: o.neighborhood || "",
+          city: o.city || "",
+          state: o.state || "",
+          shippingMethod: o.shippingMethod || "",
+          shippingDeadlineMin: o.shippingDeadlineMin || 0,
+          shippingDeadlineMax: o.shippingDeadlineMax || 0,
+          superfreteLabelId: o.superfreteLabelId || "",
+          superfreteLabelUrl: o.superfreteLabelUrl || "",
+          superfreteOrderId: o.superfreteOrderId || "",
+          superfreteStatus: o.superfreteStatus || ""
+        };
+        const metaIdx = historyCopy.findIndex(h => h && h._isMeta);
+        if (metaIdx >= 0) {
+          historyCopy[metaIdx] = { _isMeta: true, meta: extraMeta, at: historyCopy[metaIdx].at || new Date().toISOString() };
+        } else {
+          historyCopy.push({ _isMeta: true, meta: extraMeta, at: new Date().toISOString() });
+        }
+        return {
+          id: o.id,
+          client: o.client,
+          whatsapp: o.whatsapp || "",
+          product: o.product,
+          quantity: o.quantity,
+          unitValue: o.unitValue,
+          totalSale: o.totalSale,
+          shipping: o.shipping,
+          totalWithShipping: o.totalWithShipping,
+          payment: o.payment,
+          date: o.date,
+          delivery: o.delivery,
+          actualDelivery: o.actualDelivery || "",
+          tracking: o.tracking || "",
+          status: o.status,
+          productionTime: o.productionTime,
+          material: o.material,
+          notes: o.notes || "",
+          priority: o.priority || "Média",
+          petName: o.petName || "",
+          petNames: o.petNames || [],
+          petPhoto: o.petPhoto || "",
+          petPhotos: o.petPhotos || [],
+          generatedArt: o.generatedArt || "",
+          keychainMockup: o.keychainMockup || "",
+          keychainMockupName: o.keychainMockupName || null,
+          history: historyCopy,
+          orderStatus: o.orderStatus || null,
+          productionDone: o.productionDone || null,
+          paintDone: o.paintDone || null,
+          shippingUF: o.shippingUF || o.state || "",
+          shippingExpenseId: o.shippingExpenseId || "",
+          shippingExpenseName: o.shippingExpenseName || "",
+          shippingExcludedFromReport: o.shippingExcludedFromReport !== false,
+          created_at: o.created_at || new Date().toISOString()
+        };
+      });
+      await batchUpsert('orders', payload, 5);
     }
     runAutoBackup();
   } catch (err) {
@@ -204,28 +412,339 @@ async function save() {
   }
 }
 
-async function saveExpenses() {
+async function saveExpenses(target = null) {
   try {
-    if (state.expenses.length > 0) {
-      await supabase.from('expenses').upsert(state.expenses);
+    try {
+      localStorage.setItem("mpa:expenses_v1", JSON.stringify(state.expenses));
+    } catch (e) {
+      console.warn("Aviso: Limite de armazenamento local excedido. As despesas ainda serão salvas no banco de dados.", e);
+    }
+    const items = target ? (Array.isArray(target) ? target : [target]) : state.expenses;
+    if (items.length > 0) {
+      const payload = items.map(e => ({ ...e, created_at: e.created_at || new Date().toISOString() }));
+      await batchUpsert('expenses', payload, 25);
     }
     runAutoBackup();
-  } catch (err) { console.error("Erro ao salvar despesas", err); }
+  } catch (err) { 
+    console.error("Erro ao salvar despesas", err);
+    alert("Erro ao salvar despesas no banco de dados (Supabase). " + err.message);
+  }
 }
 
-async function saveProducts() {
+async function saveProducts(target = null) {
   try {
-    if (state.products.length > 0) {
-      await supabase.from('products').upsert(state.products);
+    try {
+      localStorage.setItem("mpa:products_v1", JSON.stringify(state.products));
+    } catch (e) {
+      console.warn("Aviso: Limite de armazenamento local excedido. Os produtos ainda serão salvos no banco de dados.", e);
+    }
+    const items = target ? (Array.isArray(target) ? target : [target]) : state.products;
+    if (items.length > 0) {
+      const payload = items.map(p => ({ ...p, created_at: p.created_at || new Date().toISOString() }));
+      await batchUpsert('products', payload, 25);
     }
     runAutoBackup();
-  } catch (err) { console.error("Erro ao salvar produtos", err); }
+  } catch (err) { 
+    console.error("Erro ao salvar produtos", err);
+    alert("Erro ao salvar produtos no banco de dados (Supabase). " + err.message);
+  }
 }
 
 function saveShippingRates() {
   saveSettings('shipping_rates', state.shippingRates || {});
   runAutoBackup();
 }
+
+function syncSuperfreteConfig() {
+  const cfg = state.superfreteConfig || {};
+  saveSuperfreteConfig({
+    token: cfg.token || '',
+    sandbox: cfg.sandbox || false,
+    cepOrigem: cfg.cepOrigem || '',
+    pesoDefault: cfg.pesoDefault || 0.03,
+    alturaDefault: cfg.alturaDefault || 2,
+    larguraDefault: cfg.larguraDefault || 12,
+    comprimentoDefault: cfg.comprimentoDefault || 18
+  });
+}
+
+function saveSuperfreteSettings() {
+  localStorage.setItem('mpa:superfrete_config', JSON.stringify(state.superfreteConfig));
+  syncSuperfreteConfig();
+  saveSettings('superfrete_config', state.superfreteConfig);
+  runAutoBackup();
+}
+
+async function handleCalcFrete() {
+  const cepInput = document.getElementById('orderCepInput');
+  const spinner = document.getElementById('superfreteQuoteSpinner');
+  const feedback = document.getElementById('superfreteQuoteFeedback');
+  const results = document.getElementById('superfreteQuoteResults');
+
+  const cfg = state.superfreteConfig || {};
+  if (!cfg.enabled || !cfg.token) {
+    if (feedback) {
+      feedback.textContent = 'SuperFrete não configurado. Configure em Despesas > SuperFrete.';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  const cep = cepInput ? cepInput.value.replace(/\D/g, '') : '';
+  if (cep.length !== 8) {
+    if (feedback) {
+      feedback.textContent = 'Preencha o CEP do cliente antes de calcular.';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  if (spinner) spinner.style.display = 'inline';
+  if (feedback) {
+    feedback.textContent = 'Consultando tarifas...';
+    feedback.className = 'cep-feedback';
+  }
+  if (results) results.style.display = 'none';
+
+  try {
+    syncSuperfreteConfig();
+
+    const quotes = await calcularFrete({
+      cepOrigem: cfg.cepOrigem || '08140060',
+      cepDestino: cep,
+      peso: cfg.pesoDefault || 0.03,
+      altura: cfg.alturaDefault || 2,
+      largura: cfg.larguraDefault || 12,
+      comprimento: cfg.comprimentoDefault || 18
+    });
+
+    state.superfreteQuotes = quotes;
+
+    if (spinner) spinner.style.display = 'none';
+
+    if (!quotes.length) {
+      if (feedback) {
+        feedback.textContent = 'Nenhuma opção de frete disponível para este CEP.';
+        feedback.className = 'cep-feedback error';
+      }
+      return;
+    }
+
+    if (feedback) {
+      feedback.textContent = `${quotes.length} opção(ões) encontrada(s). Selecione abaixo:`;
+      feedback.className = 'cep-feedback success';
+    }
+
+    if (results) {
+      results.style.display = 'flex';
+      results.innerHTML = quotes.map((q, idx) => {
+        const prazo = q.deliveryMin === q.deliveryMax
+          ? `${q.deliveryMax} dias úteis`
+          : `${q.deliveryMin}–${q.deliveryMax} dias úteis`;
+        const badgeClass = q.name.toLowerCase().includes('sedex') ? 'badge-sedex'
+          : q.name.toLowerCase().includes('pac') ? 'badge-pac'
+          : q.name.toLowerCase().includes('loggi') ? 'badge-loggi'
+          : 'badge-mini';
+        return `
+          <button type="button" class="superfrete-quote-card" data-quote-index="${idx}" title="Selecionar ${q.name}">
+            <span class="quote-badge ${badgeClass}">${q.name}</span>
+            <span class="quote-price">R$ ${Number(q.price).toFixed(2).replace('.', ',')}</span>
+            <span class="quote-deadline">📅 ${prazo}</span>
+            ${q.discount ? `<span class="quote-discount">💰 Desconto: R$ ${Number(q.discount).toFixed(2).replace('.', ',')}</span>` : ''}
+          </button>`;
+      }).join('');
+    }
+  } catch (err) {
+    if (spinner) spinner.style.display = 'none';
+    if (feedback) {
+      feedback.textContent = `Erro: ${err.message || 'Falha na cotação'}`;
+      feedback.className = 'cep-feedback error';
+    }
+    console.error('[SuperFrete] Erro na cotação:', err);
+  }
+}
+
+function selectSuperfreteQuote(index) {
+  const quote = state.superfreteQuotes[index];
+  if (!quote) return;
+
+  const methodInput = document.getElementById('superfreteShippingMethod');
+  const priceInput = document.getElementById('superfreteShippingPrice');
+  const minInput = document.getElementById('superfreteDeliveryMin');
+  const maxInput = document.getElementById('superfreteDeliveryMax');
+  const feedback = document.getElementById('superfreteQuoteFeedback');
+
+  if (methodInput) methodInput.value = quote.name;
+  if (priceInput) priceInput.value = quote.price;
+  if (minInput) minInput.value = quote.deliveryMin;
+  if (maxInput) maxInput.value = quote.deliveryMax;
+
+  // Highlight selected card
+  document.querySelectorAll('.superfrete-quote-card').forEach((card, i) => {
+    card.classList.toggle('selected', i === index);
+  });
+
+  if (feedback) {
+    feedback.textContent = `✅ ${quote.name} selecionado — R$ ${Number(quote.price).toFixed(2).replace('.', ',')}`;
+    feedback.className = 'cep-feedback success';
+  }
+}
+
+async function testSuperfreteConnection() {
+  const feedback = document.getElementById('superfreteTestFeedback');
+  const cfg = state.superfreteConfig || {};
+  if (!cfg.token) {
+    if (feedback) {
+      feedback.textContent = '❌ Insira o Token de API antes de testar.';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  if (feedback) {
+    feedback.textContent = '⏳ Testando conexão com SuperFrete...';
+    feedback.className = 'cep-feedback';
+  }
+
+  try {
+    syncSuperfreteConfig();
+    const testQuotes = await calcularFrete({
+      cepOrigem: cfg.cepOrigem || '08140060',
+      cepDestino: '01001000', // CEP Praça da Sé / SP
+      peso: cfg.pesoDefault || 0.03,
+      altura: cfg.alturaDefault || 2,
+      largura: cfg.larguraDefault || 12,
+      comprimento: cfg.comprimentoDefault || 18
+    });
+
+    if (feedback) {
+      feedback.textContent = `✅ Conexão bem-sucedida! ${testQuotes.length} serviço(s) disponível(is).`;
+      feedback.className = 'cep-feedback success';
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `❌ Erro na conexão: ${err.message || 'Verifique o token e CEP'}`;
+      feedback.className = 'cep-feedback error';
+    }
+  }
+}
+
+async function handleGenerateLabel(orderId) {
+  const order = state.orders.find(o => o.id === orderId);
+  if (!order) return;
+
+  const cfg = state.superfreteConfig || {};
+  if (!cfg.enabled || !cfg.token) {
+    alert('SuperFrete não configurado ou desativado. Verifique em Despesas > SuperFrete.');
+    return;
+  }
+
+  const cleanCep = String(order.cep || '').replace(/\D/g, '');
+  if (cleanCep.length !== 8) {
+    alert('O pedido não possui um CEP válido de 8 dígitos para emissão da etiqueta.');
+    return;
+  }
+
+  if (!order.address || !order.number) {
+    alert('O pedido precisa de Rua e Número preenchidos para emissão da etiqueta.');
+    return;
+  }
+
+  const confirmed = window.confirm(`Gerar etiqueta SuperFrete para o pedido ${order.id} (${order.client})?\nDestino: ${order.address}, ${order.number} - ${order.city}/${order.state} - CEP: ${order.cep}`);
+  if (!confirmed) return;
+
+  try {
+    syncSuperfreteConfig();
+    
+    let serviceId = 1; // PAC default
+    const methodUpper = String(order.shippingMethod || '').toUpperCase();
+    if (methodUpper.includes('SEDEX')) serviceId = 2;
+    else if (methodUpper.includes('MINI')) serviceId = 17;
+    else if (methodUpper.includes('LOGGI')) serviceId = 33;
+    else if (methodUpper.includes('PAC')) serviceId = 1;
+
+    const cartResult = await criarFrete({
+      from: {
+        name: 'Meu Pet em Arte',
+        phone: '11999999999',
+        email: 'contato@meupetemarte.com.br',
+        postalCode: cfg.cepOrigem || '08140060',
+        address: 'Rua Principal',
+        number: '100',
+        district: 'Centro',
+        city: 'São Paulo',
+        countryId: 'BR'
+      },
+      to: {
+        name: order.client,
+        phone: order.whatsapp || '11999999999',
+        document: order.cpf || '',
+        postalCode: cleanCep,
+        address: order.address,
+        number: order.number || 'S/N',
+        complement: order.complement || '',
+        district: order.neighborhood || 'Centro',
+        city: order.city || 'São Paulo',
+        stateAbbr: order.state || 'SP',
+        countryId: 'BR'
+      },
+      service: serviceId,
+      package: {
+        height: cfg.alturaDefault || 2,
+        width: cfg.larguraDefault || 12,
+        length: cfg.comprimentoDefault || 18,
+        weight: cfg.pesoDefault || 0.03
+      },
+      products: [
+        {
+          name: order.product || 'Chaveiro Pet Personalizado',
+          quantity: order.quantity || 1,
+          unitary_value: order.unitValue || 69.90
+        }
+      ],
+      tag: order.id
+    });
+
+    const superfreteOrderId = cartResult.id || cartResult.order_id || (cartResult.orders && cartResult.orders[0]?.id);
+    if (!superfreteOrderId) {
+      throw new Error(cartResult.message || 'Não foi possível obter o ID do frete criado.');
+    }
+
+    order.superfreteOrderId = String(superfreteOrderId);
+    order.superfreteStatus = 'Carrinho criado';
+
+    // Checkout
+    const checkoutResult = await finalizarPedido({ orders: [order.superfreteOrderId] });
+    
+    if (checkoutResult && (checkoutResult.tracking || checkoutResult.protocol)) {
+      order.tracking = checkoutResult.tracking || order.tracking;
+      order.superfreteStatus = 'Etiqueta gerada';
+    }
+
+    // Tenta obter link de impressão
+    try {
+      const printResult = await imprimirEtiqueta({ orders: [order.superfreteOrderId] });
+      if (printResult && printResult.url) {
+        order.superfreteLabelUrl = printResult.url;
+      }
+    } catch (printErr) {
+      console.warn('[SuperFrete] Aviso ao buscar link de impressão:', printErr);
+    }
+
+    order.history.unshift({
+      at: formatDateTime(new Date()),
+      text: `Etiqueta SuperFrete gerada (ID: ${order.superfreteOrderId})`
+    });
+
+    save();
+    openDetails(order.id);
+    alert(`✅ Etiqueta SuperFrete criada com sucesso!\nID: ${order.superfreteOrderId}${order.superfreteLabelUrl ? '\nVocê já pode visualizar o PDF no detalhe do pedido.' : ''}`);
+  } catch (err) {
+    console.error('[SuperFrete] Erro ao gerar etiqueta:', err);
+    alert(`❌ Falha ao gerar etiqueta: ${err.message || 'Erro inesperado'}`);
+  }
+}
+
 
 function runAutoBackup() {
   try {
@@ -316,6 +835,13 @@ function filteredOrders() {
     const text = [
       order.id,
       order.client,
+      order.cpf || "",
+      order.whatsapp || "",
+      order.cep || "",
+      order.address || "",
+      order.neighborhood || "",
+      order.city || "",
+      order.state || "",
       order.product,
       order.payment,
       order.tracking,
@@ -383,6 +909,7 @@ const viewRenderers = {
   dashboard: () => renderDashboard(),
   orders: () => renderOrders(),
   production: () => renderProduction(),
+  labels: () => renderLabels(),
   shipping: () => renderShipping(),
   products: () => renderProducts(),
   expenses: () => renderExpenses(),
@@ -551,6 +1078,14 @@ function cancelProductEdit() {
 
 function ensureAppStructure() {
   const main = document.querySelector(".main");
+  if (main && !document.getElementById("labelsView")) {
+    const section = document.createElement("section");
+    section.className = "view";
+    section.id = "labelsView";
+    section.dataset.title = "Gerar Etiquetas";
+    const shipping = document.getElementById("shippingView");
+    main.insertBefore(section, shipping || null);
+  }
   if (main && !document.getElementById("expensesView")) {
     const section = document.createElement("section");
     section.className = "view";
@@ -561,6 +1096,15 @@ function ensureAppStructure() {
   }
 
   const sideNav = document.getElementById("sideNav");
+  if (sideNav && !sideNav.querySelector('[data-view="labels"]')) {
+    const button = document.createElement("button");
+    button.className = "nav-item";
+    button.dataset.view = "labels";
+    button.type = "button";
+    button.textContent = "Gerar Etiquetas 🏷️";
+    const shippingButton = sideNav.querySelector('[data-view="shipping"]');
+    sideNav.insertBefore(button, shippingButton || null);
+  }
   if (sideNav && !sideNav.querySelector('[data-view="expenses"]')) {
     const button = document.createElement("button");
     button.className = "nav-item";
@@ -572,6 +1116,15 @@ function ensureAppStructure() {
   }
 
   const mobileNav = document.getElementById("mobileNav");
+  if (mobileNav && !mobileNav.querySelector('[data-view="labels"]')) {
+    const button = document.createElement("button");
+    button.className = "mobile-item";
+    button.dataset.view = "labels";
+    button.type = "button";
+    button.textContent = "Etiquetas";
+    const shippingButton = mobileNav.querySelector('[data-view="shipping"]');
+    mobileNav.insertBefore(button, shippingButton || null);
+  }
   if (mobileNav && !mobileNav.querySelector('[data-view="expenses"]')) {
     const button = document.createElement("button");
     button.className = "mobile-item";
@@ -623,7 +1176,7 @@ function renderDashboard() {
            <button class="primary-button" data-open-order>Novo Pedido</button>
         </div>
         <div class="quick-actions" style="display:flex; gap:8px; flex-wrap: wrap;">
-          <button class="ghost-button" data-view="orders" onclick="setTimeout(()=>document.querySelector('[data-sort=\\'status\\']')?.click(),100)">Gerar Etiqueta</button>
+          <button class="ghost-button" data-view="labels">Gerar Etiquetas 🏷️</button>
           <button class="ghost-button" data-view="expenses" onclick="setTimeout(()=>document.getElementById('newExpenseBtn')?.click(),100)">Adicionar Despesa</button>
           <button class="ghost-button" data-view="products" onclick="setTimeout(()=>document.getElementById('newProductBtn')?.click(),100)">Cadastrar Produto</button>
         </div>
@@ -693,6 +1246,9 @@ function renderDashboard() {
         const filtered = activeOrders.filter(o => 
            o.id.toLowerCase().includes(term) ||
            o.client.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(term) ||
+           (o.cpf && o.cpf.replace(/\D/g,"").includes(term.replace(/\D/g,""))) ||
+           (o.cep && o.cep.replace(/\D/g,"").includes(term.replace(/\D/g,""))) ||
+           (o.city && o.city.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(term)) ||
            (o.whatsapp && o.whatsapp.replace(/\D/g,"").includes(term.replace(/\D/g,"")))
         ).slice(0, 10);
         document.getElementById("dashboardRecentOrdersList").innerHTML = renderDashboardRecentOrders(filtered);
@@ -914,12 +1470,11 @@ function orderRow(order) {
   `;
 }
 
-function expenseTotalsByCategory() {
-  const currentMonth = today.toISOString().slice(0, 7);
-  const currentMonthExpenses = state.expenses.filter((expense) => expense.date && expense.date.startsWith(currentMonth));
+function expenseTotalsByCategory(customExpenses = null) {
+  const targetExpenses = customExpenses || state.expenses.filter((expense) => expense.date && expense.date.startsWith(today.toISOString().slice(0, 7)));
   return expenseCategories.map((category) => ({
     category,
-    total: currentMonthExpenses
+    total: targetExpenses
       .filter((expense) => expense.category === category)
       .reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
   })).filter((item) => item.total > 0);
@@ -1313,17 +1868,65 @@ function renderProduction() {
 }
 
 function renderExpenses() {
-  const data = metrics();
-  const currentMonth = today.toISOString().slice(0, 7);
-  const currentMonthExpenses = state.expenses.filter((expense) => expense.date && expense.date.startsWith(currentMonth));
-  const total = data.expenses;
-  const biggest = currentMonthExpenses.slice().sort((a, b) => Number(b.amount) - Number(a.amount))[0];
+  const currentMonthStr = today.toISOString().slice(0, 7);
+  const prevMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1, 12, 0, 0);
+  const prevMonthStr = prevMonthDate.toISOString().slice(0, 7);
+
+  const filterMode = state.expensePeriodFilter || "atual"; // "atual", "anterior", "todos"
+  let displayedExpenses = [];
+  let periodTitle = "do mês atual";
+  let activeMonthStr = currentMonthStr;
+
+  if (filterMode === "anterior") {
+    activeMonthStr = prevMonthStr;
+    periodTitle = "do mês anterior";
+    displayedExpenses = state.expenses.filter(e => e.date && e.date.startsWith(prevMonthStr));
+  } else if (filterMode === "todos") {
+    activeMonthStr = null;
+    periodTitle = "totais (histórico)";
+    displayedExpenses = [...state.expenses];
+  } else {
+    activeMonthStr = currentMonthStr;
+    periodTitle = "do mês atual";
+    displayedExpenses = state.expenses.filter(e => e.date && e.date.startsWith(currentMonthStr));
+  }
+
+  const total = displayedExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const biggest = displayedExpenses.slice().sort((a, b) => Number(b.amount) - Number(a.amount))[0];
+
+  let periodRevenue = 0;
+  if (activeMonthStr) {
+    periodRevenue = state.orders
+      .filter(o => o.status !== "Cancelado" && o.date && o.date.startsWith(activeMonthStr))
+      .reduce((sum, o) => sum + Number(o.totalWithShipping || 0), 0);
+  } else {
+    periodRevenue = state.orders
+      .filter(o => o.status !== "Cancelado")
+      .reduce((sum, o) => sum + Number(o.totalWithShipping || 0), 0);
+  }
+  const profitAfterExpenses = periodRevenue - total;
+
   document.getElementById("expensesView").innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <h2 style="margin: 0; font-size: 1.3rem;">Despesas Operacionais</h2>
+        <span class="muted" style="font-size: 0.85rem;">Visualize custos e faturamento por período</span>
+      </div>
+      <div class="filter-dropdown-wrap">
+        <span class="dropdown-icon">📅</span>
+        <select id="expensePeriodFilterSelect" class="filter-select-new" style="min-width: 230px;">
+          <option value="atual" ${filterMode === "atual" ? "selected" : ""}>Período: Mês Atual (${currentMonthStr})</option>
+          <option value="anterior" ${filterMode === "anterior" ? "selected" : ""}>Período: Mês Anterior (${prevMonthStr})</option>
+          <option value="todos" ${filterMode === "todos" ? "selected" : ""}>Todas as Despesas (Histórico)</option>
+        </select>
+      </div>
+    </div>
+
     <div class="grid metric-grid">
-      ${metric("Despesas do mes", money(total), "Total operacional")}
+      ${metric(`Despesas ${periodTitle}`, money(total), activeMonthStr || "Geral")}
       ${metric("Maior despesa", biggest ? money(biggest.amount) : money(0), biggest ? biggest.name : "Sem despesas")}
-      ${metric("Categorias", expenseTotalsByCategory().length, "Tipos com lancamentos")}
-      ${metric("Lucro pos despesas", money(metrics().profitAfterExpenses), "Estimativa liquida")}
+      ${metric("Categorias", expenseTotalsByCategory(displayedExpenses).length, "Tipos com lançamentos")}
+      ${metric("Lucro pós despesas", money(profitAfterExpenses), `Faturamento: ${money(periodRevenue)}`)}
     </div>
 
     <div class="grid content-grid">
@@ -1355,16 +1958,63 @@ function renderExpenses() {
       <div class="panel">
         <h2>Resumo por categoria</h2>
         <div class="list">
-          ${expenseTotalsByCategory().map((item) => `
+          ${expenseTotalsByCategory(displayedExpenses).map((item) => `
             <div class="soft-row">
               <span><strong>${item.category}</strong><small>${Math.round((item.total / Math.max(total, 1)) * 100)}% do total</small></span>
               <b>${money(item.total)}</b>
             </div>
-          `).join("") || `<p class="muted">Nenhuma despesa cadastrada.</p>`}
+          `).join("") || `<p class="muted">Nenhuma despesa cadastrada neste período.</p>`}
         </div>
       </div>
       <div class="panel">
-        <h2>Tarifas de frete por Estado</h2>
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center;">
+          <h2>Integração SuperFrete 🚚</h2>
+          <span class="status-pill ${state.superfreteConfig?.enabled ? 'status-finalizado' : 'status-cancelado'}" style="font-size:0.75rem; font-weight:800;">
+            ${state.superfreteConfig?.enabled ? 'ATIVO' : 'DESATIVADO'}
+          </span>
+        </div>
+        <p class="muted" style="margin-top:4px;">Cotação automática com PAC, SEDEX, Mini Envios e LOGGI.</p>
+        
+        <form id="superfreteConfigForm" class="panel form-grid" style="margin-top:12px;">
+          <label class="wide">Token de API (Bearer Token)
+            <input name="token" type="password" placeholder="Token JWT do SuperFrete" value="${escapeHtml(state.superfreteConfig?.token || '')}" required />
+          </label>
+          <label>CEP de Origem (Postagem)
+            <input name="cepOrigem" placeholder="00000-000" maxlength="9" value="${escapeHtml(state.superfreteConfig?.cepOrigem || '08140060')}" required />
+          </label>
+          <label>Peso Padrão (kg)
+            <input name="pesoDefault" type="number" step="0.001" min="0.001" value="${state.superfreteConfig?.pesoDefault || 0.03}" required />
+          </label>
+          <label>Altura (cm)
+            <input name="alturaDefault" type="number" step="0.1" min="1" value="${state.superfreteConfig?.alturaDefault || 2}" required />
+          </label>
+          <label>Largura (cm)
+            <input name="larguraDefault" type="number" step="0.1" min="1" value="${state.superfreteConfig?.larguraDefault || 12}" required />
+          </label>
+          <label>Comprimento (cm)
+            <input name="comprimentoDefault" type="number" step="0.1" min="1" value="${state.superfreteConfig?.comprimentoDefault || 18}" required />
+          </label>
+          <div class="wide" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" name="enabled" ${state.superfreteConfig?.enabled !== false ? 'checked' : ''} />
+              <b>Ativar SuperFrete no formulário</b>
+            </label>
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" name="sandbox" ${state.superfreteConfig?.sandbox ? 'checked' : ''} />
+              <span>Modo Sandbox (Testes)</span>
+            </label>
+          </div>
+          <div class="wide quick-actions wrap" style="margin-top:8px; align-items:center;">
+            <button class="primary-button" type="submit">Salvar Configurações</button>
+            <button class="secondary-button" type="button" id="btnTestSuperfrete">Testar Conexão</button>
+            <span id="superfreteTestFeedback" class="cep-feedback"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Tarifas de frete por Estado (Fallback)</h2>
+        <p class="muted" style="margin-bottom:8px;">Usado como alternativa caso a API não esteja disponível.</p>
         <form id="shippingRatesForm" class="panel form-grid">
           <label>Estado (UF)
             <input name="uf" required maxlength="2" placeholder="SP">
@@ -1390,7 +2040,7 @@ function renderExpenses() {
 
     <div class="panel table-shell" style="margin-top:16px">
       <div class="section-head">
-        <h2>Lista de despesas</h2>
+        <h2>Lista de despesas (${displayedExpenses.length} ${displayedExpenses.length === 1 ? 'item' : 'itens'})</h2>
         <button class="mini-button" type="button" id="resetExpenseExamples">Restaurar exemplos</button>
       </div>
       <div class="table-wrap">
@@ -1406,7 +2056,7 @@ function renderExpenses() {
             </tr>
           </thead>
           <tbody>
-            ${state.expenses.map((expense) => `
+            ${displayedExpenses.map((expense) => `
               <tr>
                 <td><input class="cell-input name-cell" data-expense-edit="${expense.id}" data-field="name" value="${escapeHtml(expense.name)}"></td>
                 <td>
@@ -1428,8 +2078,8 @@ function renderExpenses() {
 }
 
 function getReportDates(period) {
-  const end = new Date(today);
-  const start = new Date(today);
+  let end = new Date(today);
+  let start = new Date(today);
   if (period === "7d") {
     start.setDate(today.getDate() - 7);
   } else if (period === "30d") {
@@ -1437,11 +2087,19 @@ function getReportDates(period) {
   } else if (period === "90d") {
     start.setDate(today.getDate() - 90);
   } else if (period === "mes-atual") {
-    start.setDate(1);
-    end.setMonth(end.getMonth() + 1, 0);
+    const y = today.getFullYear();
+    const m = today.getMonth();
+    start = new Date(y, m, 1, 12, 0, 0);
+    end = new Date(y, m + 1, 0, 12, 0, 0);
+  } else if (period === "mes-anterior") {
+    const y = today.getFullYear();
+    const m = today.getMonth();
+    start = new Date(y, m - 1, 1, 12, 0, 0);
+    end = new Date(y, m, 0, 12, 0, 0);
   } else if (period === "ano-atual") {
-    start.setMonth(0, 1);
-    end.setMonth(11, 31);
+    const y = today.getFullYear();
+    start = new Date(y, 0, 1, 12, 0, 0);
+    end = new Date(y, 11, 31, 12, 0, 0);
   } else {
     start.setDate(today.getDate() - 30);
   }
@@ -1449,6 +2107,12 @@ function getReportDates(period) {
 }
 
 function getCompareDates(start, end) {
+  if (start.getDate() === 1 && new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate() === end.getDate()) {
+    const prevMonthEnd = new Date(start.getFullYear(), start.getMonth(), 0, 12, 0, 0);
+    const prevMonthStart = new Date(prevMonthEnd.getFullYear(), prevMonthEnd.getMonth(), 1, 12, 0, 0);
+    return { start: prevMonthStart, end: prevMonthEnd };
+  }
+
   const diffTime = Math.abs(end - start);
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   
@@ -1783,6 +2447,7 @@ function renderFinance() {
             <option value="7d" ${state.reportPeriod === "7d" ? "selected" : ""}>Período: Últimos 7 dias</option>
             <option value="90d" ${state.reportPeriod === "90d" ? "selected" : ""}>Período: Últimos 90 dias</option>
             <option value="mes-atual" ${state.reportPeriod === "mes-atual" ? "selected" : ""}>Período: Mês Atual</option>
+            <option value="mes-anterior" ${state.reportPeriod === "mes-anterior" ? "selected" : ""}>Período: Mês Anterior</option>
             <option value="ano-atual" ${state.reportPeriod === "ano-atual" ? "selected" : ""}>Período: Ano Atual</option>
           </select>
         </div>
@@ -2226,15 +2891,51 @@ function openDetails(id) {
               </label>
               <label class="wide">
                 Nomes dos pets
-                <textarea id="detailPetNames" rows="3" placeholder="Um nome por linha ou separado por vírgula">${escapeHtml((order.petNames || []).join(", ") || order.petName || "")}</textarea>
+                <textarea id="detailPetNames" rows="2" placeholder="Um nome por linha ou separado por vírgula">${escapeHtml((order.petNames || []).join(", ") || order.petName || "")}</textarea>
               </label>
               <label>
                 Cliente
                 <input id="detailClient" value="${escapeHtml(order.client)}" />
               </label>
               <label>
+                CPF
+                <input id="detailCpf" value="${escapeHtml(order.cpf || "")}" placeholder="000.000.000-00" maxlength="14" />
+              </label>
+              <label>
                 WhatsApp
                 <input id="detailWhatsapp" value="${escapeHtml(order.whatsapp || "")}" placeholder="(11) 99999-9999" />
+              </label>
+              <label>
+                CEP
+                <div class="cep-input-wrapper">
+                  <input id="detailCep" value="${escapeHtml(order.cep || "")}" placeholder="00000-000" maxlength="9" />
+                  <span class="cep-loading-spinner" id="detailCepSpinner" style="display:none;">⏳ Buscando...</span>
+                </div>
+                <small class="cep-feedback" id="detailCepFeedback"></small>
+              </label>
+              <label class="wide">
+                Rua / Logradouro
+                <input id="detailAddress" value="${escapeHtml(order.address || "")}" placeholder="Rua, Avenida, Alameda..." />
+              </label>
+              <label>
+                Número
+                <input id="detailNumber" value="${escapeHtml(order.number || "")}" placeholder="123 ou S/N" />
+              </label>
+              <label>
+                Complemento
+                <input id="detailComplement" value="${escapeHtml(order.complement || "")}" placeholder="Apto, Bloco (opcional)" />
+              </label>
+              <label>
+                Bairro
+                <input id="detailNeighborhood" value="${escapeHtml(order.neighborhood || "")}" placeholder="Bairro" />
+              </label>
+              <label>
+                Cidade
+                <input id="detailCity" value="${escapeHtml(order.city || "")}" placeholder="Cidade" />
+              </label>
+              <label>
+                Estado (UF)
+                <input id="detailState" value="${escapeHtml(order.state || "")}" placeholder="UF" maxlength="2" style="text-transform: uppercase;" />
               </label>
               <label>
                 Produto
@@ -2280,7 +2981,7 @@ function openDetails(id) {
                   ${["Alta", "Média", "Baixa"].map((priority) => `<option ${priority === order.priority ? "selected" : ""}>${priority}</option>`).join("")}
                 </select>
               </label>
-              <div class="quick-actions wrap">
+              <div class="quick-actions wrap" style="grid-column: 1 / -1; margin-top: 8px;">
                 <button class="primary-button" type="button" data-save-detail-info="${order.id}">Salvar informações</button>
                 <button class="ghost-button" type="button" data-cancel-detail-edit>Cancelar</button>
               </div>
@@ -2290,12 +2991,20 @@ function openDetails(id) {
               ${detailLine("Nome do pet", petLabel)}
               ${petList.length > 1 ? detailLine("Nomes dos pets", petList.join(", ")) : ""}
               ${detailLine("Status do pedido", workflowStatus)}
+              ${detailLine("Cliente", escapeHtml(order.client))}
+              ${order.cpf ? detailLine("CPF", escapeHtml(order.cpf)) : ""}
               ${detailLine("WhatsApp", order.whatsapp || "Nao cadastrado")}
+              ${order.cep ? detailLine("CEP", escapeHtml(order.cep)) : ""}
+              ${order.address ? detailLine("Endereço", `${escapeHtml(order.address)}, ${escapeHtml(order.number || "S/N")}${order.complement ? " (" + escapeHtml(order.complement) + ")" : ""}`) : ""}
+              ${(order.neighborhood || order.city) ? detailLine("Bairro / Cidade", `${order.neighborhood ? escapeHtml(order.neighborhood) + " - " : ""}${escapeHtml(order.city || "")}${order.state ? " (" + escapeHtml(order.state) + ")" : ""}`) : ""}
               ${detailLine("Produto", order.product)}
               ${detailLine("Quantidade", order.quantity)}
               ${order.quantity > 1 ? detailLine("Itens do pedido", itemList.join(", ")) : ""}
               ${detailLine("Produção", producedFlag)}
               ${detailLine("Pintura", paintedFlag)}
+              ${order.shippingMethod ? detailLine("Método de Envio", `${escapeHtml(order.shippingMethod)}${order.shippingDeadlineMax ? ` (${order.shippingDeadlineMin === order.shippingDeadlineMax ? order.shippingDeadlineMax : `${order.shippingDeadlineMin}–${order.shippingDeadlineMax}`} dias úteis)` : ""}`) : ""}
+              ${order.superfreteStatus ? detailLine("Status SuperFrete", escapeHtml(order.superfreteStatus)) : ""}
+              ${order.superfreteLabelUrl ? detailLine("Etiqueta SuperFrete", `<a href="${order.superfreteLabelUrl}" target="_blank" rel="noopener" style="color:var(--brand); text-decoration:underline; font-weight:800;">📄 Abrir Etiqueta PDF</a>`) : ""}
               ${detailLine("Total com frete", money(order.totalWithShipping))}
               ${detailLine("Pagamento", order.payment)}
               ${detailLine("Data do Pedido", order.date ? formatDate(order.date) : "Sem data")}
@@ -2303,8 +3012,11 @@ function openDetails(id) {
               ${detailLine("Material", `${order.material}g`)}
               ${detailLine("Tempo de producao", `${order.productionTime}h`)}
             </div>
-            <div class="quick-actions">
+            <div class="quick-actions wrap">
               <button class="primary-button" type="button" data-toggle-detail-edit>Editar informações</button>
+              <button class="secondary-button" type="button" data-generate-label="${order.id}">🏷️ Gerar Etiqueta SuperFrete</button>
+              ${order.superfreteLabelUrl ? `<a class="ghost-button" href="${order.superfreteLabelUrl}" target="_blank" rel="noopener">📄 Ver Etiqueta</a>` : ""}
+              ${(order.address || order.cep) ? `<button class="ghost-button" type="button" data-copy-address="${order.id}">Copiar endereço</button>` : ""}
               <button class="ghost-button" type="button" data-copy="${order.tracking}">Copiar rastreio</button>
               <button class="ghost-button" type="button" data-print="${order.id}">Imprimir pedido</button>
               <button class="mini-button danger-button" type="button" data-delete-order="${order.id}">Excluir pedido</button>
@@ -2316,7 +3028,7 @@ function openDetails(id) {
           <textarea id="detailNotes" rows="5">${escapeHtml(order.notes || "")}</textarea>
           <button class="primary-button" type="button" data-save-notes="${order.id}">Salvar observacoes</button>
           <h3>Historico</h3>
-          <div class="history-list">${order.history.map((item) => `<div><b>${item.at}</b><span>${item.text}</span></div>`).join("")}</div>
+          <div class="history-list">${order.history.filter(h => !h._isMeta).map((item) => `<div><b>${item.at}</b><span>${item.text}</span></div>`).join("")}</div>
         </div>
       </div>
     </article>
@@ -2453,6 +3165,15 @@ function isImportDataRow(row) {
 
 function rowToOrder(row, index) {
   const client = String(getCell(row, "Clientes", "Cliente", "Nome") || "").trim();
+  const cpf = String(getCell(row, "CPF", "Cpf", "Documento") || "").trim();
+  const whatsapp = String(getCell(row, "WhatsApp", "Whatsapp", "Telefone", "Celular") || "").trim();
+  const cep = String(getCell(row, "CEP", "Cep") || "").trim();
+  const address = String(getCell(row, "Endereço", "Endereco", "Rua", "Logradouro") || "").trim();
+  const number = String(getCell(row, "Número", "Numero", "Nº") || "").trim();
+  const complement = String(getCell(row, "Complemento") || "").trim();
+  const neighborhood = String(getCell(row, "Bairro") || "").trim();
+  const city = String(getCell(row, "Cidade") || "").trim();
+  const stateUF = String(getCell(row, "Estado", "UF") || "").trim().toUpperCase();
   const product = String(getCell(row, "Produto", "Produtos") || "").trim();
   const quantity = parseNumber(getCell(row, "Quantidade", "Qtd")) || 1;
   const unitValue = parseNumber(getCell(row, "Valor por Unidade", "Valor Unitario", "Valor"));
@@ -2469,6 +3190,15 @@ function rowToOrder(row, index) {
   const order = {
     id: `MPA-${date.replaceAll("-", "").slice(2)}-${String(index + 1).padStart(3, "0")}`,
     client,
+    cpf,
+    whatsapp,
+    cep,
+    address,
+    number,
+    complement,
+    neighborhood,
+    city,
+    state: stateUF,
     product,
     quantity,
     unitValue: unitValue || totalSale / Math.max(quantity, 1),
@@ -2478,12 +3208,14 @@ function rowToOrder(row, index) {
     payment,
     date,
     delivery,
+    actualDelivery: "",
     tracking,
     status,
     productionTime,
     material,
     notes: "Importado de planilha",
     petPhoto: "",
+    petPhotos: [""],
     generatedArt: "",
     keychainMockup: "",
     history: [{ at: formatDateTime(new Date()), text: "Pedido importado de planilha" }]
@@ -2659,9 +3391,39 @@ async function fileToDataUrl(file) {
 function printOrder(id) {
   const order = state.orders.find((item) => item.id === id);
   if (!order) return;
-  const content = `Pedido ${order.id}\nCliente: ${order.client}\nProduto: ${order.product}\nQuantidade: ${order.quantity}\nTotal: ${money(order.totalWithShipping)}\nEntrega: ${formatDate(order.delivery)}\nRastreio: ${order.tracking || "Pendente"}\nObservacoes: ${order.notes || ""}`;
+  const addressLine = [
+    order.address ? `${order.address}, ${order.number || "S/N"}${order.complement ? " (" + order.complement + ")" : ""}` : "",
+    order.neighborhood,
+    (order.city || order.state) ? `${order.city || ""}${order.state ? " - " + order.state : ""}` : "",
+    order.cep ? `CEP: ${order.cep}` : ""
+  ].filter(Boolean).join(" - ");
+
+  const content = [
+    `MEU PET EM ARTE - COMPROVANTE DE PEDIDO`,
+    `Pedido: ${order.id}`,
+    `Data: ${order.date ? formatDate(order.date) : "Sem data"}`,
+    `----------------------------------------`,
+    `CLIENTE: ${order.client}`,
+    order.cpf ? `CPF: ${order.cpf}` : null,
+    order.whatsapp ? `WhatsApp: ${order.whatsapp}` : null,
+    addressLine ? `Endereço: ${addressLine}` : null,
+    `----------------------------------------`,
+    `PRODUTO: ${order.product}`,
+    `Quantidade: ${order.quantity}`,
+    order.petName ? `Pet: ${order.petName}` : null,
+    (order.petNames && order.petNames.length > 1) ? `Pets: ${order.petNames.join(", ")}` : null,
+    `Pagamento: ${order.payment}`,
+    `Valor unitário: ${money(order.unitValue)}`,
+    `Frete: ${money(order.shipping)}`,
+    `TOTAL: ${money(order.totalWithShipping)}`,
+    `----------------------------------------`,
+    `Status: ${getOrderWorkflowStatus(order)}`,
+    `Rastreio: ${order.tracking || "Pendente"}`,
+    order.notes ? `Observações: ${order.notes}` : null
+  ].filter(Boolean).join("\n");
+
   const printWindow = window.open("", "_blank", "noopener");
-  printWindow.document.write(`<pre style="font:16px system-ui;white-space:pre-wrap">${escapeHtml(content)}</pre>`);
+  printWindow.document.write(`<pre style="font:14px monospace;white-space:pre-wrap;padding:20px;line-height:1.5">${escapeHtml(content)}</pre>`);
   printWindow.print();
 }
 
@@ -2825,10 +3587,14 @@ function bindEvents() {
     if (target.id === "exportReportBtn") {
       const { start, end } = getReportDates(state.reportPeriod);
       const filtered = getOrdersInPeriod(start, end, state.reportProduct);
-      const headers = ["ID", "Cliente", "Produto", "Quantidade", "Faturamento", "Frete", "Data", "Status"];
+      const headers = ["ID", "Cliente", "CPF", "WhatsApp", "CEP", "Cidade/UF", "Produto", "Quantidade", "Faturamento", "Frete", "Data", "Status"];
       const rows = filtered.map(o => [
         o.id,
         o.client,
+        o.cpf || "",
+        o.whatsapp || "",
+        o.cep || "",
+        (o.city || o.state) ? `${o.city || ""}${o.state ? "/" + o.state : ""}` : "",
         o.product,
         o.quantity,
         o.totalSale.toFixed(2),
@@ -2908,13 +3674,22 @@ function bindEvents() {
       order.petName = String(document.getElementById("detailPetName")?.value || "").trim();
       order.petNames = normalizePetNames(document.getElementById("detailPetNames")?.value || "", order.quantity, order.petName || petNameFromClient(order.client));
       order.client = String(document.getElementById("detailClient")?.value || "").trim() || order.client;
+      order.cpf = String(document.getElementById("detailCpf")?.value || "").trim();
       order.whatsapp = String(document.getElementById("detailWhatsapp")?.value || "").trim();
+      order.cep = String(document.getElementById("detailCep")?.value || "").trim();
+      order.address = String(document.getElementById("detailAddress")?.value || "").trim();
+      order.number = String(document.getElementById("detailNumber")?.value || "").trim();
+      order.complement = String(document.getElementById("detailComplement")?.value || "").trim();
+      order.neighborhood = String(document.getElementById("detailNeighborhood")?.value || "").trim();
+      order.city = String(document.getElementById("detailCity")?.value || "").trim();
+      order.state = String(document.getElementById("detailState")?.value || "").trim().toUpperCase();
       order.product = productName;
       order.quantity = Number(document.getElementById("detailQuantity")?.value || order.quantity || 1);
       order.shipping = Number(document.getElementById("detailShipping")?.value || order.shipping || 0);
       order.payment = String(document.getElementById("detailPayment")?.value || order.payment);
       order.date = String(document.getElementById("detailDate")?.value || order.date);
       order.delivery = String(document.getElementById("detailDelivery")?.value || order.delivery);
+      order.actualDelivery = String(document.getElementById("detailActualDelivery")?.value || order.actualDelivery || "");
       order.tracking = String(document.getElementById("detailTracking")?.value || "").trim();
       order.orderStatus = String(document.getElementById("detailWorkflowStatus")?.value || getOrderWorkflowStatus(order));
       order.priority = String(document.getElementById("detailPriority")?.value || order.priority || "Média");
@@ -2924,6 +3699,24 @@ function bindEvents() {
       save();
       state.detailEditMode = false;
       openDetails(order.id);
+    }
+    if (target.dataset.copyAddress) {
+      const order = state.orders.find((item) => item.id === target.dataset.copyAddress);
+      if (order) {
+        const fullAddress = [
+          order.client,
+          order.cpf ? `CPF: ${order.cpf}` : "",
+          order.whatsapp ? `Tel: ${order.whatsapp}` : "",
+          order.address ? `${order.address}, ${order.number || "S/N"}${order.complement ? " - " + order.complement : ""}` : "",
+          order.neighborhood ? `Bairro: ${order.neighborhood}` : "",
+          (order.city || order.state) ? `${order.city || ""}${order.state ? " - " + order.state : ""}` : "",
+          order.cep ? `CEP: ${order.cep}` : ""
+        ].filter(Boolean).join("\n");
+        navigator.clipboard?.writeText(fullAddress);
+        const originalText = target.textContent;
+        target.textContent = "Copiado!";
+        setTimeout(() => { target.textContent = originalText; }, 2000);
+      }
     }
     if (target.dataset.page) {
       state.page = Number(target.dataset.page);
@@ -2980,6 +3773,17 @@ function bindEvents() {
   });
 
   document.body.addEventListener("input", (event) => {
+    if (event.target.name === "cpf" || event.target.id === "detailCpf") {
+      event.target.value = formatCpf(event.target.value);
+    }
+    if (event.target.name === "cep" || event.target.id === "detailCep") {
+      event.target.value = formatCep(event.target.value);
+      const digits = event.target.value.replace(/\D/g, "");
+      if (digits.length === 8) {
+        const ctx = event.target.id === "detailCep" ? "detail" : "order";
+        handleCepLookup(ctx);
+      }
+    }
     if (event.target.id === "shippingSearch") {
       state.shippingSearch = event.target.value;
       renderShipping();
@@ -3000,9 +3804,28 @@ function bindEvents() {
       state.productionSearch = event.target.value;
       renderProduction();
     }
+    if (event.target.id === "labelsSearchInput") {
+      state.labelsSearch = event.target.value;
+      renderLabels();
+    }
   });
 
   document.body.addEventListener("change", async (event) => {
+    if (event.target.name === "cep" || event.target.id === "detailCep") {
+      const digits = event.target.value.replace(/\D/g, "");
+      if (digits.length === 8) {
+        const ctx = event.target.id === "detailCep" ? "detail" : "order";
+        handleCepLookup(ctx);
+      }
+    }
+    if (event.target.id === "labelsStatusFilter") {
+      state.labelsFilter = event.target.value;
+      renderLabels();
+    }
+    if (event.target.id === "labelsServiceFilter") {
+      state.labelsServiceFilter = event.target.value;
+      renderLabels();
+    }
     if (event.target.id === "statusFilter") {
       state.statusFilter = event.target.value;
       state.page = 1;
@@ -3022,15 +3845,19 @@ function bindEvents() {
     }
     if (event.target.id === "reportPeriodSelect") {
       state.reportPeriod = event.target.value;
-      renderReports();
+      renderFinance();
+    }
+    if (event.target.id === "expensePeriodFilterSelect") {
+      state.expensePeriodFilter = event.target.value;
+      renderExpenses();
     }
     if (event.target.id === "reportCompareSelect") {
       state.reportCompare = event.target.value;
-      renderReports();
+      renderFinance();
     }
     if (event.target.id === "reportProductSelect") {
       state.reportProduct = event.target.value;
-      renderReports();
+      renderFinance();
     }
     if (event.target.dataset.status) updateStatus(event.target.dataset.status, event.target.value);
     if (event.target.dataset.assignResp) {
@@ -3119,16 +3946,13 @@ function bindEvents() {
           try {
             const backup = JSON.parse(e.target.result);
             if (backup.orders && backup.orders.length > 0) {
-              const { error } = await supabase.from('orders').upsert(backup.orders);
-              if (error) throw new Error("Erro em Orders: " + error.message);
+              await batchUpsert('orders', backup.orders, 5);
             }
             if (backup.expenses && backup.expenses.length > 0) {
-              const { error } = await supabase.from('expenses').upsert(backup.expenses);
-              if (error) throw new Error("Erro em Expenses: " + error.message);
+              await batchUpsert('expenses', backup.expenses, 25);
             }
             if (backup.products && backup.products.length > 0) {
-              const { error } = await supabase.from('products').upsert(backup.products);
-              if (error) throw new Error("Erro em Products: " + error.message);
+              await batchUpsert('products', backup.products, 25);
             }
             alert("Backup importado com sucesso para o Supabase! Recarregando...");
             window.location.reload();
@@ -3357,6 +4181,13 @@ function bindEvents() {
     if (event.target.id === "downloadBackup") downloadBackup();
     if (event.target.id === "resetDemo") resetDemoData();
     if (event.target.id === "resetExpenseExamples") resetExpenseExamples();
+    if (event.target.id === "btnCalcFrete" || event.target.closest("#btnCalcFrete")) handleCalcFrete();
+    if (event.target.id === "btnTestSuperfrete" || event.target.closest("#btnTestSuperfrete")) testSuperfreteConnection();
+    if (event.target.dataset.generateLabel) handleGenerateLabel(event.target.dataset.generateLabel);
+    const quoteCard = event.target.closest(".superfrete-quote-card");
+    if (quoteCard && quoteCard.dataset.quoteIndex !== undefined) {
+      selectSuperfreteQuote(Number(quoteCard.dataset.quoteIndex));
+    }
     if (event.target.id === "clearImport") {
       state.importRows = [];
       state.importFileName = "";
@@ -3384,19 +4215,58 @@ function bindEvents() {
     const data = Object.fromEntries(new FormData(form));
     const product = state.products.find((item) => item.name === data.product) || state.products[0];
     let shippingVal = 0;
-    if (data.shippingUF && state.shippingRates && state.shippingRates[data.shippingUF] !== undefined) {
+    let shippingMethod = "";
+    let deadlineMin = 0;
+    let deadlineMax = 0;
+
+    if (data.superfreteShippingPrice !== undefined && data.superfreteShippingPrice !== "") {
+      shippingVal = Number(data.superfreteShippingPrice);
+      shippingMethod = String(data.superfreteShippingMethod || "");
+      deadlineMin = Number(data.superfreteDeliveryMin || 0);
+      deadlineMax = Number(data.superfreteDeliveryMax || 0);
+    } else if (data.shippingUF && state.shippingRates && state.shippingRates[data.shippingUF] !== undefined) {
       shippingVal = Number(state.shippingRates[data.shippingUF]);
+      shippingMethod = `Tabela manual (${data.shippingUF})`;
     }
+
     const initialStatus = state.productionStatuses[0] || "Recebido";
-    const order = makeOrder(data.client, data.whatsapp, data.product, 1, product.unitValue, shippingVal, data.payment, 0, 5, initialStatus, data.tracking, product.name.includes("Combo") ? 4.8 : 3.2, product.name.includes("Combo") ? 38 : 22, data.notes);
+    const order = makeOrder(
+      data.client,
+      data.whatsapp,
+      data.product,
+      1,
+      product.unitValue,
+      shippingVal,
+      data.payment,
+      0,
+      5,
+      initialStatus,
+      data.tracking,
+      product.name.includes("Combo") ? 4.8 : 3.2,
+      product.name.includes("Combo") ? 38 : 22,
+      data.notes,
+      "Média",
+      data.petName,
+      data.cpf,
+      data.cep,
+      data.address,
+      data.number,
+      data.complement,
+      data.neighborhood,
+      data.city,
+      data.state
+    );
     order.date = data.date || "";
     order.actualDelivery = "";
     order.shippingExpenseId = "";
     order.shippingExpenseName = "";
-    order.shippingUF = data.shippingUF || "";
+    order.shippingUF = data.shippingUF || data.state || "";
     order.shippingExcludedFromReport = true;
     order.petName = String(data.petName || "").trim();
     order.orderStatus = "Novo Pedido";
+    order.shippingMethod = shippingMethod;
+    order.shippingDeadlineMin = deadlineMin;
+    order.shippingDeadlineMax = deadlineMax;
     
     let totalQty = 0;
     const finalPetNames = [];
@@ -3436,11 +4306,31 @@ function bindEvents() {
     state.orders.unshift(order);
     save();
     form.reset();
+    document.getElementById("superfreteQuoteResults").style.display = "none";
+    document.getElementById("superfreteQuoteFeedback").textContent = "";
     document.getElementById("orderModal").close();
     setView("orders");
     render();
   });
   document.body.addEventListener("submit", (event) => {
+    if (event.target.id === "superfreteConfigForm") {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      state.superfreteConfig = {
+        token: String(data.token || "").trim(),
+        cepOrigem: String(data.cepOrigem || "").replace(/\D/g, ""),
+        pesoDefault: Number(data.pesoDefault || 0.03),
+        alturaDefault: Number(data.alturaDefault || 2),
+        larguraDefault: Number(data.larguraDefault || 12),
+        comprimentoDefault: Number(data.comprimentoDefault || 18),
+        enabled: data.enabled === "on" || data.enabled === true,
+        sandbox: data.sandbox === "on" || data.sandbox === true
+      };
+      saveSuperfreteSettings();
+      render();
+      setView("expenses");
+      alert("Configurações do SuperFrete salvas com sucesso!");
+    }
     if (event.target.id === "expenseForm") {
       event.preventDefault();
       const data = Object.fromEntries(new FormData(event.target));
@@ -3522,10 +4412,82 @@ function hydrateForm() {
       Object.entries(state.shippingRates || {}).map(([uf, rate]) => `<option value="${uf}">${uf} - ${money(rate)}</option>`).join("");
   }
 }
-async function boot() {
+let appLoaded = false;
+
+async function checkAuth() {
+  try {
+    const { data: { session } } = await supabaseAuthClient.auth.getSession();
+    if (session) {
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('appShell').style.display = 'flex';
+      if (!appLoaded) {
+        appLoaded = true;
+        await bootData();
+      }
+    } else {
+      document.getElementById('loginScreen').style.display = 'flex';
+      document.getElementById('appShell').style.display = 'none';
+    }
+  } catch (err) {
+    console.error("Erro ao checar autenticação:", err);
+  }
+}
+
+supabaseAuthClient.auth.onAuthStateChange((event, session) => {
+  checkAuth();
+});
+
+async function bootData() {
   try {
     const { data: oData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
-    if (oData) state.orders = oData;
+    if (oData) {
+      const localOrders = load("orders_v2", []);
+      const localMap = new Map((Array.isArray(localOrders) ? localOrders : []).map(o => [o.id, o]));
+      state.orders = oData.map(order => {
+        const local = localMap.get(order.id);
+        if (Array.isArray(order.history)) {
+          const metaItem = order.history.find(h => h && h._isMeta && h.meta);
+          if (metaItem && metaItem.meta) {
+            order.cpf = order.cpf || metaItem.meta.cpf || "";
+            order.cep = order.cep || metaItem.meta.cep || "";
+            order.address = order.address || metaItem.meta.address || "";
+            order.number = order.number || metaItem.meta.number || "";
+            order.complement = order.complement || metaItem.meta.complement || "";
+            order.neighborhood = order.neighborhood || metaItem.meta.neighborhood || "";
+            order.city = order.city || metaItem.meta.city || "";
+            order.state = order.state || metaItem.meta.state || "";
+            order.shippingMethod = order.shippingMethod || metaItem.meta.shippingMethod || "";
+            order.shippingDeadlineMin = order.shippingDeadlineMin || metaItem.meta.shippingDeadlineMin || 0;
+            order.shippingDeadlineMax = order.shippingDeadlineMax || metaItem.meta.shippingDeadlineMax || 0;
+            order.superfreteLabelId = order.superfreteLabelId || metaItem.meta.superfreteLabelId || "";
+            order.superfreteLabelUrl = order.superfreteLabelUrl || metaItem.meta.superfreteLabelUrl || "";
+            order.superfreteOrderId = order.superfreteOrderId || metaItem.meta.superfreteOrderId || "";
+            order.superfreteStatus = order.superfreteStatus || metaItem.meta.superfreteStatus || "";
+          }
+          order.history = order.history.filter(h => !h._isMeta);
+        }
+        if (local) {
+          order.cpf = order.cpf || local.cpf || "";
+          order.cep = order.cep || local.cep || "";
+          order.address = order.address || local.address || "";
+          order.number = order.number || local.number || "";
+          order.complement = order.complement || local.complement || "";
+          order.neighborhood = order.neighborhood || local.neighborhood || "";
+          order.city = order.city || local.city || "";
+          order.state = order.state || local.state || "";
+          order.shippingMethod = order.shippingMethod || local.shippingMethod || "";
+          order.shippingDeadlineMin = order.shippingDeadlineMin || local.shippingDeadlineMin || 0;
+          order.shippingDeadlineMax = order.shippingDeadlineMax || local.shippingDeadlineMax || 0;
+          order.superfreteLabelId = order.superfreteLabelId || local.superfreteLabelId || "";
+          order.superfreteLabelUrl = order.superfreteLabelUrl || local.superfreteLabelUrl || "";
+          order.superfreteOrderId = order.superfreteOrderId || local.superfreteOrderId || "";
+          order.superfreteStatus = order.superfreteStatus || local.superfreteStatus || "";
+        }
+        return order;
+      });
+    } else {
+      state.orders = load("orders_v2", typeof seedOrders === "function" ? seedOrders() : []);
+    }
 
     const { data: eData } = await supabase.from('expenses').select('*').order('created_at', { ascending: false });
     if (eData && eData.length > 0) state.expenses = eData;
@@ -3539,6 +4501,10 @@ async function boot() {
     if (sData) {
       sData.forEach(s => {
         if (s.key === 'shipping_rates') state.shippingRates = s.value;
+        if (s.key === 'superfrete_config') {
+          state.superfreteConfig = s.value;
+          syncSuperfreteConfig();
+        }
       });
     }
   } catch (err) {
@@ -3547,7 +4513,7 @@ async function boot() {
 
   if (localStorage.getItem("mpa:theme_v2") === "dark") document.body.classList.add("dark");
   hydrateForm();
-  bindEvents();
+  if (typeof bindEvents === "function") bindEvents();
   render();
   setView("dashboard");
 
@@ -3556,7 +4522,180 @@ async function boot() {
   }
 }
 
-boot();
+function renderLabels() {
+  state.labelsSearch = state.labelsSearch || "";
+  state.labelsFilter = state.labelsFilter || "Todos"; // Todos, Pendentes, Geradas
+  state.labelsServiceFilter = state.labelsServiceFilter || "Todos"; // Todos, SEDEX, PAC, LOGGI, Mini
+
+  const productionStatuses = state.productionStatuses || ["Recebido", "Em Produção", "Pintura", "Pronto"];
+
+  // FILTRO ESTRITO: Apenas pedidos que estão com status de produção
+  let list = state.orders.filter(order => {
+    if (order.status === "Cancelado" || order.status === "Enviado" || order.status === "Entregue") return false;
+    return productionStatuses.includes(order.status) || getOrderWorkflowStatus(order) === "Produção" || ["Recebido", "Em Produção", "Em Producao", "Pintura", "Pronto"].includes(order.status);
+  });
+
+  const totalInProduction = list.length;
+  const totalGenerated = list.filter(o => o.superfreteLabelUrl || o.superfreteStatus === "Etiqueta gerada").length;
+  const totalPending = totalInProduction - totalGenerated;
+  const totalShippingValue = list.reduce((sum, o) => sum + Number(o.shipping || 0), 0);
+
+  // Filtro de busca textual
+  const term = String(state.labelsSearch || "").trim().toLowerCase();
+  if (term) {
+    list = list.filter(o => {
+      const petName = o.petName || (o.client || "").split(" ")[0] || "";
+      const addressText = `${o.address || ""} ${o.number || ""} ${o.neighborhood || ""} ${o.city || ""} ${o.state || ""} ${o.cep || ""}`;
+      return `${o.id} ${o.client} ${o.cpf || ""} ${o.product} ${petName} ${o.tracking || ""} ${o.shippingMethod || ""} ${addressText}`.toLowerCase().includes(term);
+    });
+  }
+
+  // Filtro por status de etiqueta
+  if (state.labelsFilter === "Pendentes") {
+    list = list.filter(o => !o.superfreteLabelUrl && o.superfreteStatus !== "Etiqueta gerada");
+  } else if (state.labelsFilter === "Geradas") {
+    list = list.filter(o => o.superfreteLabelUrl || o.superfreteStatus === "Etiqueta gerada");
+  }
+
+  // Filtro por transportadora
+  if (state.labelsServiceFilter !== "Todos") {
+    list = list.filter(o => String(o.shippingMethod || "").toUpperCase().includes(state.labelsServiceFilter.toUpperCase()));
+  }
+
+  // Ordenação: pendentes primeiro, depois por data
+  list.sort((a, b) => {
+    const aHasLabel = !!(a.superfreteLabelUrl || a.superfreteStatus === "Etiqueta gerada");
+    const bHasLabel = !!(b.superfreteLabelUrl || b.superfreteStatus === "Etiqueta gerada");
+    if (aHasLabel !== bHasLabel) return aHasLabel ? 1 : -1;
+    return (a.date || "9999").localeCompare(b.date || "9999");
+  });
+
+  document.getElementById("labelsView").innerHTML = `
+    <div class="panel production-panel">
+      <div class="production-header-section">
+        <div class="title-area">
+          <h2>Geração de Etiquetas 🏷️</h2>
+          <p class="muted">Emissão de etiquetas SuperFrete exclusivamente para pedidos em produção.</p>
+        </div>
+      </div>
+
+      <div class="grid metric-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px;">
+        ${metric("Em Produção", totalInProduction, "Pedidos aptos para etiqueta")}
+        ${metric("Aguardando Etiqueta", totalPending, "Pendentes de emissão")}
+        ${metric("Etiquetas Geradas", totalGenerated, "Prontas para impressão")}
+        ${metric("Valor em Fretes", money(totalShippingValue), "Total cotado nos pedidos")}
+      </div>
+
+      <div class="production-toolbar-new" style="margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
+        <div class="search-wrap" style="flex: 1 1 250px;">
+          <span class="search-icon-new">🔍</span>
+          <input id="labelsSearchInput" class="search-input-new" placeholder="Buscar por cliente, ID, CEP, cidade ou rastreio..." value="${escapeHtml(state.labelsSearch)}" />
+        </div>
+
+        <div class="filter-dropdown-wrap">
+          <span class="dropdown-icon">🏷️</span>
+          <select id="labelsStatusFilter" class="filter-select-new">
+            <option value="Todos" ${state.labelsFilter === "Todos" ? "selected" : ""}>Todos os Status</option>
+            <option value="Pendentes" ${state.labelsFilter === "Pendentes" ? "selected" : ""}>⏳ Aguardando Etiqueta (${totalPending})</option>
+            <option value="Geradas" ${state.labelsFilter === "Geradas" ? "selected" : ""}>✅ Etiquetas Geradas (${totalGenerated})</option>
+          </select>
+        </div>
+
+        <div class="filter-dropdown-wrap">
+          <span class="dropdown-icon">🚚</span>
+          <select id="labelsServiceFilter" class="filter-select-new">
+            <option value="Todos" ${state.labelsServiceFilter === "Todos" ? "selected" : ""}>Todas Transportadoras</option>
+            <option value="SEDEX" ${state.labelsServiceFilter === "SEDEX" ? "selected" : ""}>SEDEX</option>
+            <option value="PAC" ${state.labelsServiceFilter === "PAC" ? "selected" : ""}>PAC</option>
+            <option value="LOGGI" ${state.labelsServiceFilter === "LOGGI" ? "selected" : ""}>LOGGI</option>
+            <option value="Mini" ${state.labelsServiceFilter === "Mini" ? "selected" : ""}>Mini Envios</option>
+          </select>
+        </div>
+      </div>
+
+      ${list.length === 0 ? `
+        <div class="panel" style="text-align:center; padding: 48px 24px;">
+          <p style="font-size: 1.1rem; font-weight:700; color:var(--ink);">Nenhum pedido em produção encontrado para os filtros selecionados.</p>
+          <p class="muted" style="margin-top:6px;">Pedidos novos entram aqui assim que avançam para a etapa de Produção.</p>
+        </div>
+      ` : `
+        <div class="labels-cards-grid">
+          ${list.map(order => {
+            const hasLabel = !!order.superfreteLabelUrl;
+            const petPhoto = order.petPhoto ? `style="background-image:url('${order.petPhoto}')"` : "";
+            const petName = order.petName || (order.client || "").split(" ")[0] || "-";
+            const serviceName = order.shippingMethod || "SuperFrete";
+            const badgeClass = serviceName.toLowerCase().includes("sedex") ? "badge-sedex"
+              : serviceName.toLowerCase().includes("pac") ? "badge-pac"
+              : serviceName.toLowerCase().includes("loggi") ? "badge-loggi"
+              : serviceName.toLowerCase().includes("mini") ? "badge-mini"
+              : "badge-pac";
+            
+            const fullAddress = [
+              order.address ? `${order.address}, ${order.number || "S/N"}${order.complement ? " (" + order.complement + ")" : ""}` : "",
+              order.neighborhood,
+              (order.city || order.state) ? `${order.city || ""}${order.state ? " - " + order.state : ""}` : "",
+              order.cep ? `CEP: ${order.cep}` : ""
+            ].filter(Boolean).join(" • ");
+
+            return `
+              <article class="label-order-card ${hasLabel ? 'label-generated' : 'label-pending'}">
+                <div class="label-card-head">
+                  <div class="label-card-client-info">
+                    <div class="label-pet-photo" ${petPhoto}></div>
+                    <div>
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="kanban-card-id">#${order.id.split("-").pop() || order.id}</span>
+                        <span class="status-pill ${statusClass(order.status)}" style="font-size:0.72rem; padding:2px 8px;">${order.status}</span>
+                      </div>
+                      <h3 class="label-client-name">${escapeHtml(order.client)}</h3>
+                      <small class="muted">Pet: <strong>${escapeHtml(petName)}</strong> • ${escapeHtml(order.product)} (${order.quantity} un)</small>
+                    </div>
+                  </div>
+
+                  <div class="label-card-service-info">
+                    <span class="quote-badge ${badgeClass}">${escapeHtml(serviceName)}</span>
+                    <strong class="label-shipping-price">${money(order.shipping)}</strong>
+                    ${order.shippingDeadlineMax ? `<small class="muted">📅 ${order.shippingDeadlineMin === order.shippingDeadlineMax ? order.shippingDeadlineMax : `${order.shippingDeadlineMin}–${order.shippingDeadlineMax}`} dias</small>` : ''}
+                  </div>
+                </div>
+
+                <div class="label-card-address-box">
+                  <span style="font-size:0.78rem; font-weight:700; color:var(--ink); display:flex; justify-content:space-between; align-items:center;">
+                    <span>📍 Destino da Encomenda</span>
+                    <button class="link-button compact-link" type="button" data-copy-address="${order.id}" title="Copiar endereço completo">Copiar Endereço</button>
+                  </span>
+                  <p class="label-address-text">${escapeHtml(fullAddress || "Endereço não preenchido")}</p>
+                </div>
+
+                <div class="label-card-footer">
+                  <div class="label-status-badge-wrap">
+                    ${hasLabel ? `
+                      <span class="label-badge-success">✅ Etiqueta Emitida</span>
+                      ${order.tracking ? `<span class="label-tracking-code" title="Código de rastreio">📦 ${escapeHtml(order.tracking)}</span>` : ''}
+                    ` : `
+                      <span class="label-badge-pending">⏳ Aguardando Emissão</span>
+                    `}
+                  </div>
+
+                  <div class="label-card-actions">
+                    ${hasLabel ? `
+                      <a href="${order.superfreteLabelUrl}" target="_blank" rel="noopener" class="primary-button label-print-btn">📄 Abrir Etiqueta PDF</a>
+                      <button class="ghost-button" type="button" data-generate-label="${order.id}" title="Regerar etiqueta">🔄 Regerar</button>
+                    ` : `
+                      <button class="primary-button label-generate-btn" type="button" data-generate-label="${order.id}">🏷️ Gerar Etiqueta SuperFrete</button>
+                    `}
+                    <button class="secondary-button" type="button" data-detail="${order.id}">Detalhes</button>
+                  </div>
+                </div>
+              </article>
+            `;
+          }).join("")}
+        </div>
+      `}
+    </div>
+  `;
+}
 
 function renderShipping() {
   state.shippingSearch = state.shippingSearch || "";
@@ -3568,7 +4707,7 @@ function renderShipping() {
   if (term) {
     list = list.filter((order) => {
       const petName = order.petName || (order.client || "").split(" ")[0] || "";
-      return `${order.id} ${order.client} ${order.product} ${petName} ${order.tracking}`.toLowerCase().includes(term);
+      return `${order.id} ${order.client} ${order.cpf || ""} ${order.cep || ""} ${order.city || ""} ${order.product} ${petName} ${order.tracking}`.toLowerCase().includes(term);
     });
   }
 
@@ -3634,6 +4773,7 @@ function renderShipping() {
                           </div>
                           <h4 class="kanban-card-pet-name">${escapeHtml(petName)}</h4>
                           <p class="kanban-card-breed">${escapeHtml(order.client)}</p>
+                          ${order.city ? `<div style="font-size:0.75rem;color:var(--muted);margin-top:2px;">📍 ${escapeHtml(order.city)}${order.state ? ' - ' + escapeHtml(order.state) : ''}</div>` : ''}
                           <div class="kanban-card-meta-new" style="margin-top:8px;">
                             <input class="cell-input tracking-input" style="width:100%;font-size:0.8rem;padding:4px;" placeholder="Código de rastreio" data-shipping-tracking="${order.id}" value="${escapeHtml(order.tracking || '')}" />
                           </div>
@@ -3650,3 +4790,45 @@ function renderShipping() {
     </div>
   `;
 }
+
+// Authentication Listeners
+document.getElementById('loginForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = e.target.email.value;
+  const password = e.target.password.value;
+  const errorEl = document.getElementById('loginError');
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  
+  if (errorEl) errorEl.style.display = 'none';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Entrando...';
+  }
+
+  const { error } = await supabaseAuthClient.auth.signInWithPassword({ email, password });
+  
+  if (error) {
+    console.error("Erro ao realizar login:", error);
+    if (errorEl) {
+      errorEl.style.display = 'block';
+      errorEl.textContent = error.message === 'Invalid login credentials' ? 'E-mail ou senha incorretos' : ('Erro no login: ' + error.message);
+    }
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Entrar no painel';
+    }
+  } else {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Entrar no painel';
+    }
+    e.target.reset();
+  }
+});
+
+const handleLogout = async () => {
+  await supabaseAuthClient.auth.signOut();
+};
+
+document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
+document.getElementById('mobileLogoutBtn')?.addEventListener('click', handleLogout);
