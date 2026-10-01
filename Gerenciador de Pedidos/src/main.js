@@ -3505,23 +3505,51 @@ function wipeSystemData() {
   setView("import");
 }
 
-function deleteOrder(id) {
+async function deleteOrder(id) {
   const order = state.orders.find((item) => item.id === id);
   if (!order) return;
   const confirmed = window.confirm(`Excluir o pedido ${order.id} de ${order.client}? Essa acao nao pode ser desfeita.`);
   if (!confirmed) return;
   state.orders = state.orders.filter((item) => item.id !== id);
   state.selectedOrder = null;
-  save();
+  try {
+    localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
+  } catch (e) {
+    console.warn("Aviso ao atualizar cache local:", e);
+  }
+  try {
+    const { error } = await supabase.from('orders').delete().eq('id', id);
+    if (error) {
+      console.error("Erro ao excluir do Supabase:", error);
+      alert("Erro ao excluir pedido do banco: " + error.message);
+    }
+  } catch (err) {
+    console.error("Falha ao comunicar com banco:", err);
+  }
   render();
   const detailModal = document.getElementById("detailModal");
-  if (detailModal.open) detailModal.close();
+  if (detailModal && detailModal.open) detailModal.close();
   setView("orders");
 }
 
-function deleteExpense(id) {
+async function deleteExpense(id) {
+  const confirmed = window.confirm("Excluir esta despesa? Essa acao nao pode ser desfeita.");
+  if (!confirmed) return;
   state.expenses = state.expenses.filter((expense) => expense.id !== id);
-  saveExpenses();
+  try {
+    localStorage.setItem("mpa:expenses_v1", JSON.stringify(state.expenses));
+  } catch (e) {
+    console.warn("Aviso ao atualizar cache local de despesas:", e);
+  }
+  try {
+    const { error } = await supabase.from('expenses').delete().eq('id', id);
+    if (error) {
+      console.error("Erro ao excluir despesa do Supabase:", error);
+      alert("Erro ao excluir despesa do banco: " + error.message);
+    }
+  } catch (err) {
+    console.error("Falha ao comunicar com banco:", err);
+  }
   render();
   setView("expenses");
 }
