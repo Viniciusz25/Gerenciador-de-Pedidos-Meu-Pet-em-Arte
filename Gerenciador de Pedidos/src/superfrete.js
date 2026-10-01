@@ -273,14 +273,63 @@ export async function imprimirEtiqueta({ orders }) {
 
 /**
  * Get order/shipping info.
- * GET /api/v0/order/{orderId}
+ * GET /api/v0/order/info/{orderId}
  * 
  * @param {string} orderId - The SuperFrete order ID
- * @returns {Promise<Object>} Order details including tracking
+ * @returns {Promise<Object>} Order details including tracking and status
  */
 export async function infosPedido(orderId) {
   const base = getBaseUrl();
-  const url = `${base}/api/v0/order/${orderId}`;
+  const cleanId = encodeURIComponent(String(orderId).trim());
+  
+  // Tenta o endpoint oficial /api/v0/order/info/{id}
+  let url = `${base}/api/v0/order/info/${cleanId}`;
+
+  try {
+    let res = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders()
+    });
+
+    if (res.status === 404) {
+      // Fallback para /api/v0/order/{id}
+      url = `${base}/api/v0/order/${cleanId}`;
+      res = await fetch(url, {
+        method: 'GET',
+        headers: getHeaders()
+      });
+    }
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || `Erro ${res.status}: ${res.statusText}`);
+    }
+
+    return await res.json();
+  } catch (err) {
+    console.error('[SuperFrete] Erro ao buscar info do pedido:', err);
+    throw err;
+  }
+}
+
+// ─── List Orders / Tags (Listar Etiquetas da Conta) ──────────────────────────
+
+/**
+ * List orders/labels from SuperFrete.
+ * GET /api/v0/me/orders
+ * 
+ * @param {Object} [params]
+ * @param {number} [params.page=1]
+ * @param {string} [params.status] - pending, released, posted, delivered, canceled
+ * @returns {Promise<Object>} Paginated labels list
+ */
+export async function listarEtiquetas({ page = 1, status = '' } = {}) {
+  const base = getBaseUrl();
+  const query = new URLSearchParams();
+  if (page) query.append('page', String(page));
+  if (status) query.append('status', status);
+
+  const url = `${base}/api/v0/me/orders${query.toString() ? `?${query.toString()}` : ''}`;
 
   try {
     const res = await fetch(url, {
@@ -295,9 +344,45 @@ export async function infosPedido(orderId) {
 
     return await res.json();
   } catch (err) {
-    console.error('[SuperFrete] Erro ao buscar info do pedido:', err);
+    console.error('[SuperFrete] Erro ao listar etiquetas:', err);
     throw err;
   }
+}
+
+// ─── Direct Tracking Link Helper ─────────────────────────────────────────────
+
+/**
+ * Retorna o link oficial direto para acompanhamento do rastreio.
+ * Detecta automaticamente se é Loggi ou Correios.
+ * 
+ * @param {string} trackingCode 
+ * @returns {{ url: string, carrier: string }}
+ */
+export function obterLinkRastreio(trackingCode) {
+  const code = String(trackingCode || '').trim();
+  if (!code) return { url: '', carrier: '' };
+
+  const isCorreios = /^[A-Za-z]{2}\d{9}[A-Za-z]{2}$/.test(code);
+  if (isCorreios) {
+    return {
+      url: `https://rastreamento.correios.com.br/app/index.php?codigo=${encodeURIComponent(code)}`,
+      carrier: 'Correios'
+    };
+  }
+
+  // Se começar com SLG ou tiver formato alfanumérico padrão de transportadora (Loggi)
+  const isLoggi = /^SLG/i.test(code) || /^[A-Z0-9]{8,20}$/i.test(code);
+  if (isLoggi) {
+    return {
+      url: `https://www.loggi.com/rastreador/${encodeURIComponent(code)}`,
+      carrier: 'Loggi'
+    };
+  }
+
+  return {
+    url: `https://linketrack.com/rastreio/${encodeURIComponent(code)}`,
+    carrier: 'Transportadora'
+  };
 }
 
 // ─── Cancel Order ─────────────────────────────────────────────────────────────
@@ -337,3 +422,4 @@ export async function cancelarPedido({ orderId, description }) {
 // ─── Utility Exports ──────────────────────────────────────────────────────────
 
 export { getConfig, saveConfig };
+
