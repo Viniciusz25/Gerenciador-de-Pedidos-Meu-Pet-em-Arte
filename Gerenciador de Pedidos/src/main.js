@@ -1510,8 +1510,8 @@ function mapLegacyStatus(status) {
 
 function productionBadgeColor(status, delivery) {
   const todayStr = today.toISOString().slice(0,10);
-  if (delivery && delivery < todayStr && !["Pronto","Enviado","Cancelado"].includes(status)) return "#e04949"; // atrasado
-  const completed = ["Pronto","Enviado"];
+  if (delivery && delivery < todayStr && !["Pronto","Enviado","Entregue","Cancelado"].includes(status)) return "#e04949"; // atrasado
+  const completed = ["Pronto","Enviado","Entregue"];
   const notStarted = ["Recebido"];
   if (completed.includes(status)) return "#2fbf71"; // green
   if (notStarted.includes(status)) return "#9aa0a6"; // gray
@@ -1526,7 +1526,10 @@ function orderProgress(order) {
 
 function orderIsOverdue(order) {
   const todayStr = today.toISOString().slice(0, 10);
-  return order.delivery && order.delivery < todayStr && !["Pronto", "Enviado", "Cancelado"].includes(order.status);
+  const doneStatuses = ["Pronto", "Enviado", "Entregue", "Cancelado"];
+  const workflowStatus = typeof getOrderWorkflowStatus === "function" ? getOrderWorkflowStatus(order) : "";
+  if (doneStatuses.includes(workflowStatus) || doneStatuses.includes(order.orderStatus)) return false;
+  return Boolean(order.delivery && order.delivery < todayStr && !doneStatuses.includes(order.status));
 }
 
 function getPetBreed(order) {
