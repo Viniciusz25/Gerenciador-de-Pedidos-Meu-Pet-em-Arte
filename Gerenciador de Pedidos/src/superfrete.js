@@ -116,6 +116,33 @@ export async function calcularFrete({ cepOrigem, cepDestino, peso, altura, largu
   }
 }
 
+function formatSuperfreteError(errData, status, statusText) {
+  if (!errData) return `Erro ${status}: ${statusText}`;
+  
+  const parts = [];
+  if (errData.errors && typeof errData.errors === 'object') {
+    for (const [key, val] of Object.entries(errData.errors)) {
+      const msg = Array.isArray(val) ? val.join(', ') : String(val);
+      const friendlyKey = key
+        .replace(/^to\./, 'Destinatário > ')
+        .replace(/^from\./, 'Remetente > ')
+        .replace('state_abbr', 'UF/Estado')
+        .replace('postal_code', 'CEP')
+        .replace('document', 'CPF/CNPJ')
+        .replace('volumes', 'Dimensões/Volumes')
+        .replace('address', 'Endereço')
+        .replace('number', 'Número');
+      parts.push(`${friendlyKey}: ${msg}`);
+    }
+  }
+
+  if (parts.length > 0) {
+    return parts.join(' | ');
+  }
+
+  return errData.message || errData.error || `Erro ${status}: ${statusText}`;
+}
+
 // ─── Cart (Criar Frete / Adicionar ao Carrinho) ──────────────────────────────
 
 /**
@@ -131,47 +158,56 @@ export async function calcularFrete({ cepOrigem, cepDestino, peso, altura, largu
  * @returns {Promise<Object>} Cart item with order ID
  */
 export async function criarFrete({
-  from, to, service, package: pkg, products, options, tag
+  from = {}, to = {}, service, package: pkg, products, options, tag
 }) {
   const base = getBaseUrl();
   const url = `${base}/api/v0/cart`;
 
+  const volumeItem = {
+    height: Number(pkg?.height || 2),
+    width: Number(pkg?.width || 12),
+    length: Number(pkg?.length || 18),
+    weight: Number(pkg?.weight || 0.03)
+  };
+
   const body = {
     from: {
-      name: from.name || '',
-      phone: from.phone || '',
-      email: from.email || '',
-      document: from.document || '',
-      company_document: from.companyDocument || '',
+      name: from.name || 'Meu Pet em Arte',
+      phone: String(from.phone || '11999999999').replace(/\D/g, ''),
+      email: from.email || 'contato@meupetemarte.com.br',
+      document: String(from.document || '').replace(/\D/g, ''),
+      company_document: String(from.companyDocument || '').replace(/\D/g, ''),
       state_register: from.stateRegister || '',
-      address: from.address || '',
+      address: from.address || 'Rua Principal',
       complement: from.complement || '',
-      number: from.number || '',
-      district: from.district || '',
-      city: from.city || '',
+      number: from.number || '100',
+      district: from.district || 'Centro',
+      city: from.city || 'São Paulo',
+      state_abbr: (from.stateAbbr || from.state_abbr || 'SP').toUpperCase().trim(),
       country_id: from.countryId || 'BR',
-      postal_code: String(from.postalCode || '').replace(/\D/g, ''),
+      postal_code: String(from.postalCode || from.postal_code || '08140060').replace(/\D/g, ''),
       note: from.note || ''
     },
     to: {
       name: to.name || '',
-      phone: to.phone || '',
-      email: to.email || '',
-      document: to.document || '',
-      company_document: to.companyDocument || '',
+      phone: String(to.phone || '11999999999').replace(/\D/g, ''),
+      email: to.email || 'contato@meupetemarte.com.br',
+      document: String(to.document || '').replace(/\D/g, ''),
+      company_document: String(to.companyDocument || '').replace(/\D/g, ''),
       state_register: to.stateRegister || '',
       address: to.address || '',
       complement: to.complement || '',
-      number: to.number || '',
-      district: to.district || '',
+      number: to.number || 'S/N',
+      district: to.district || 'Centro',
       city: to.city || '',
-      state_abbr: to.stateAbbr || '',
+      state_abbr: (to.stateAbbr || to.state_abbr || 'SP').toUpperCase().trim(),
       country_id: to.countryId || 'BR',
-      postal_code: String(to.postalCode || '').replace(/\D/g, ''),
+      postal_code: String(to.postalCode || to.postal_code || '').replace(/\D/g, ''),
       note: to.note || ''
     },
-    service: service,
-    package: pkg,
+    service: service || 1,
+    package: volumeItem,
+    volumes: [volumeItem],
     options: options || {
       insurance_value: 0,
       receipt: false,
@@ -180,8 +216,18 @@ export async function criarFrete({
       non_commercial: true,
       platform: 'MeuPetEmArte'
     },
-    products: products || [],
-    tag: tag || ''
+    products: (products && products.length ? products : [
+      {
+        name: 'Chaveiro Pet Personalizado',
+        quantity: 1,
+        unitary_value: 69.90
+      }
+    ]).map(p => ({
+      name: p.name || 'Chaveiro Pet Personalizado',
+      quantity: Number(p.quantity) || 1,
+      unitary_value: Number(p.unitary_value || p.unitaryValue || p.price || 69.90)
+    })),
+    tag: String(tag || '')
   };
 
   try {
@@ -193,7 +239,7 @@ export async function criarFrete({
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || `Erro ${res.status}: ${res.statusText}`);
+      throw new Error(formatSuperfreteError(errData, res.status, res.statusText));
     }
 
     return await res.json();
@@ -226,7 +272,7 @@ export async function finalizarPedido({ orders }) {
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || `Erro ${res.status}: ${res.statusText}`);
+      throw new Error(formatSuperfreteError(errData, res.status, res.statusText));
     }
 
     return await res.json();
@@ -259,7 +305,7 @@ export async function imprimirEtiqueta({ orders }) {
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || `Erro ${res.status}: ${res.statusText}`);
+      throw new Error(formatSuperfreteError(errData, res.status, res.statusText));
     }
 
     return await res.json();
@@ -409,7 +455,7 @@ export async function cancelarPedido({ orderId, description }) {
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || `Erro ${res.status}: ${res.statusText}`);
+      throw new Error(formatSuperfreteError(errData, res.status, res.statusText));
     }
 
     return await res.json();

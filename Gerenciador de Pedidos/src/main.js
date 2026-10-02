@@ -652,7 +652,27 @@ async function handleGenerateLabel(orderId) {
     return;
   }
 
-  const confirmed = window.confirm(`Gerar etiqueta SuperFrete para o pedido ${order.id} (${order.client})?\nDestino: ${order.address}, ${order.number} - ${order.city}/${order.state} - CEP: ${order.cep}`);
+  // Validação obrigatória de CPF/CNPJ exigido pelas transportadoras
+  let cleanDoc = String(order.cpf || '').replace(/\D/g, '');
+  if (!cleanDoc || (cleanDoc.length !== 11 && cleanDoc.length !== 14)) {
+    const inputCpf = window.prompt(
+      `O CPF/CNPJ do destinatário (${order.client}) é obrigatório para emissão da etiqueta na transportadora.\n\nPor favor, informe o CPF (11 dígitos):`,
+      order.cpf || ''
+    );
+    if (!inputCpf) {
+      alert('Operação cancelada: CPF não informado.');
+      return;
+    }
+    cleanDoc = String(inputCpf).replace(/\D/g, '');
+    if (cleanDoc.length !== 11 && cleanDoc.length !== 14) {
+      alert('CPF inválido. Um CPF deve conter 11 dígitos numéricos.');
+      return;
+    }
+    order.cpf = cleanDoc;
+    save();
+  }
+
+  const confirmed = window.confirm(`Gerar etiqueta SuperFrete para o pedido ${order.id} (${order.client})?\n\nDestino: ${order.address}, ${order.number} - ${order.city}/${order.state} - CEP: ${order.cep}\nCPF: ${cleanDoc}`);
   if (!confirmed) return;
 
   try {
@@ -667,41 +687,42 @@ async function handleGenerateLabel(orderId) {
 
     const cartResult = await criarFrete({
       from: {
-        name: 'Meu Pet em Arte',
-        phone: '11999999999',
-        email: 'contato@meupetemarte.com.br',
+        name: cfg.remetenteNome || 'Meu Pet em Arte',
+        phone: String(cfg.remetenteTelefone || '11999999999').replace(/\D/g, ''),
+        email: cfg.remetenteEmail || 'contato@meupetemarte.com.br',
         postalCode: cfg.cepOrigem || '08140060',
-        address: 'Rua Principal',
-        number: '100',
-        district: 'Centro',
-        city: 'São Paulo',
+        address: cfg.remetenteEndereco || 'Rua Principal',
+        number: cfg.remetenteNumero || '100',
+        district: cfg.remetenteBairro || 'Centro',
+        city: cfg.remetenteCidade || 'São Paulo',
+        stateAbbr: cfg.remetenteUF || 'SP',
         countryId: 'BR'
       },
       to: {
         name: order.client,
-        phone: order.whatsapp || '11999999999',
-        document: order.cpf || '',
+        phone: String(order.whatsapp || '11999999999').replace(/\D/g, '') || '11999999999',
+        document: cleanDoc,
         postalCode: cleanCep,
         address: order.address,
         number: order.number || 'S/N',
         complement: order.complement || '',
         district: order.neighborhood || 'Centro',
         city: order.city || 'São Paulo',
-        stateAbbr: order.state || 'SP',
+        stateAbbr: (order.state || 'SP').toUpperCase().trim(),
         countryId: 'BR'
       },
       service: serviceId,
       package: {
-        height: cfg.alturaDefault || 2,
-        width: cfg.larguraDefault || 12,
-        length: cfg.comprimentoDefault || 18,
-        weight: cfg.pesoDefault || 0.03
+        height: Number(cfg.alturaDefault || 2),
+        width: Number(cfg.larguraDefault || 12),
+        length: Number(cfg.comprimentoDefault || 18),
+        weight: Number(cfg.pesoDefault || 0.03)
       },
       products: [
         {
           name: order.product || 'Chaveiro Pet Personalizado',
-          quantity: order.quantity || 1,
-          unitary_value: order.unitValue || 69.90
+          quantity: Number(order.quantity) || 1,
+          unitary_value: Number(order.unitValue) || 69.90
         }
       ],
       tag: order.id
@@ -714,13 +735,20 @@ async function handleGenerateLabel(orderId) {
 
     order.superfreteOrderId = String(superfreteOrderId);
     order.superfreteStatus = 'Carrinho criado';
+    save();
 
-    // Checkout
-    const checkoutResult = await finalizarPedido({ orders: [order.superfreteOrderId] });
-    
-    if (checkoutResult && (checkoutResult.tracking || checkoutResult.protocol)) {
-      order.tracking = checkoutResult.tracking || order.tracking;
-      order.superfreteStatus = 'Etiqueta gerada';
+    // Finalização e emissão no checkout da SuperFrete
+    try {
+      const checkoutResult = await finalizarPedido({ orders: [order.superfreteOrderId] });
+      if (checkoutResult && (checkoutResult.tracking || checkoutResult.protocol)) {
+        order.tracking = checkoutResult.tracking || order.tracking;
+        order.superfreteStatus = 'Etiqueta gerada';
+      }
+    } catch (checkoutErr) {
+      console.warn('[SuperFrete] Erro no checkout:', checkoutErr);
+      alert(`⚠️ O frete foi criado com sucesso no carrinho (ID: ${order.superfreteOrderId}), porém a emissão/pagamento não foi concluída:\n\n${checkoutErr.message}\n\nVerifique se há saldo disponível na sua carteira SuperFrete para emitir a etiqueta.`);
+      openDetails(order.id);
+      return;
     }
 
     // Tenta obter link de impressão
@@ -743,7 +771,7 @@ async function handleGenerateLabel(orderId) {
     alert(`✅ Etiqueta SuperFrete criada com sucesso!\nID: ${order.superfreteOrderId}${order.superfreteLabelUrl ? '\nVocê já pode visualizar o PDF no detalhe do pedido.' : ''}`);
   } catch (err) {
     console.error('[SuperFrete] Erro ao gerar etiqueta:', err);
-    alert(`❌ Falha ao gerar etiqueta: ${err.message || 'Erro inesperado'}`);
+    alert(`❌ Falha ao gerar etiqueta:\n${err.message || 'Erro inesperado'}`);
   }
 }
 
