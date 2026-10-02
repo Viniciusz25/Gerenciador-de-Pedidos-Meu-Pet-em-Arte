@@ -5,6 +5,7 @@ export async function onRequest(context) {
 
   const forwardHeaders = new Headers(context.request.headers);
   forwardHeaders.delete('host');
+  forwardHeaders.set('User-Agent', 'MeuPetEmArte (contato@meupetemarte.com.br)');
 
   const reqInit = {
     method: context.request.method,

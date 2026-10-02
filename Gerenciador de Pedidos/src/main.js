@@ -103,6 +103,8 @@ const state = {
     enabled: true
   })
   ,superfreteQuotes: []
+  ,lastTrackingSync: load("last_tracking_sync", null)
+  ,isTrackingSyncing: false
 };
 
 // viewMode: 'list' or 'cards' (cards = small cards)
@@ -745,161 +747,195 @@ async function handleGenerateLabel(orderId) {
   }
 }
 
+function getLastTrackingSyncText() {
+  if (state.isTrackingSyncing) return "Sincronizando...";
+  if (!state.lastTrackingSync) return "Auto: ativo";
+  const diffMin = Math.round((Date.now() - new Date(state.lastTrackingSync).getTime()) / 60000);
+  if (diffMin < 1) return "Auto: agora mesmo";
+  if (diffMin === 1) return "Auto: há 1 min";
+  return `Auto: há ${diffMin} min`;
+}
+
 async function syncTrackingSuperfrete({ isManual = false, orderId = null } = {}) {
   const cfg = state.superfreteConfig || {};
-  if (!cfg.enabled || !cfg.token) {
-    if (isManual) alert('SuperFrete não está ativado ou sem token. Verifique em Despesas > SuperFrete.');
+  if (cfg.enabled === false) {
+    if (isManual) alert('SuperFrete está desativado nas configurações.');
     return { updated: 0 };
   }
 
+  if (state.isTrackingSyncing) {
+    console.log('[Tracking] Sincronização já em andamento, aguardando...');
+    return { updated: 0 };
+  }
+
+  state.isTrackingSyncing = true;
   syncSuperfreteConfig();
-  let ordersToSync = [];
+  render();
 
-  if (orderId) {
-    const o = state.orders.find(item => item.id === orderId);
-    if (o) ordersToSync = [o];
-  } else {
-    // Sincroniza pedidos que possuem superfreteOrderId ou tracking e que ainda não foram marcados como Entregue ou Cancelado
-    ordersToSync = state.orders.filter(o => 
-      (o.superfreteOrderId || o.tracking) && 
-      !["Entregue", "Cancelado"].includes(o.status) &&
-      !["Entregue", "Cancelado"].includes(getOrderWorkflowStatus(o))
-    );
-  }
-
-  if (!ordersToSync.length) {
-    if (isManual) alert('Nenhum pedido pendente de entrega encontrado para rastrear.');
-    return { updated: 0 };
-  }
-
+  const cleanName = (n) => String(n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '').trim();
   let updatedCount = 0;
-  const statusTranslations = {
-    pending: "Pendente",
-    released: "Aguardando Postagem",
-    posted: "Postado / Em Trânsito",
-    delivered: "Entregue",
-    canceled: "Cancelado"
-  };
 
-  for (const order of ordersToSync) {
-    try {
-      let info = null;
-      if (order.superfreteOrderId) {
-        info = await infosPedido(order.superfreteOrderId);
-      }
-
-      if (info) {
-        let changed = false;
-        const rawStatus = String(info.status || "").toLowerCase();
-        const friendlyStatus = statusTranslations[rawStatus] || info.status || order.superfreteStatus;
-
-        if (friendlyStatus && order.superfreteStatus !== friendlyStatus) {
-          order.superfreteStatus = friendlyStatus;
-          changed = true;
-        }
-
-        if (info.tracking && order.tracking !== info.tracking) {
-          order.tracking = info.tracking;
-          changed = true;
-        }
-
-        if (info.print && info.print.url && order.superfreteLabelUrl !== info.print.url) {
-          order.superfreteLabelUrl = info.print.url;
-          changed = true;
-        }
-
-        // Se a SuperFrete marcou como delivered / entregue
-        if (rawStatus === 'delivered' || rawStatus.includes('entreg')) {
-          if (order.status !== 'Entregue' || getOrderWorkflowStatus(order) !== 'Entregue') {
-            order.status = 'Entregue';
-            order.orderStatus = 'Entregue';
-            const deliveryDate = info.delivered_at ? info.delivered_at.slice(0, 10) : (info.updated_at ? info.updated_at.slice(0, 10) : new Date().toISOString().slice(0, 10));
-            order.actualDelivery = order.actualDelivery || deliveryDate;
-            order.history.unshift({
-              at: formatDateTime(new Date()),
-              text: `🎉 Encomenda entregue ao destinatário (SuperFrete Rastreio: ${order.tracking || ''})`
-            });
-            changed = true;
-            updatedCount++;
-          }
-        } else if (rawStatus === 'posted' || rawStatus.includes('postad')) {
-          if (["Novo Pedido", "Produção", "Postagem"].includes(getOrderWorkflowStatus(order))) {
-            order.status = 'Enviado';
-            order.orderStatus = 'Enviado';
-            order.history.unshift({
-              at: formatDateTime(new Date()),
-              text: `🚚 Encomenda postada / Em trânsito (SuperFrete Rastreio: ${order.tracking || ''})`
-            });
-            changed = true;
-            updatedCount++;
-          }
-        }
-
-        if (changed) {
-          await save([order]);
-        }
-      }
-    } catch (err) {
-      console.warn(`[SuperFrete Tracking] Erro ao sincronizar pedido ${order.id}:`, err);
-    }
-  }
-
-  // Tenta também consultar as últimas etiquetas geradas na conta para correlacionar pedidos que faltem ID
   try {
-    const meOrders = await listarEtiquetas({ page: 1 });
-    const labels = Array.isArray(meOrders) ? meOrders : (meOrders?.data || meOrders?.orders || []);
-    if (Array.isArray(labels) && labels.length) {
-      for (const lbl of labels) {
-        const matchingOrder = state.orders.find(o => 
-          (lbl.id && String(o.superfreteOrderId) === String(lbl.id)) ||
-          (lbl.tracking && String(o.tracking).trim() === String(lbl.tracking).trim()) ||
-          (Array.isArray(lbl.tags) && lbl.tags.some(t => (t.tag === o.id || t === o.id)))
-        );
+    // 1. Buscar as etiquetas recentes da SuperFrete (páginas 1, 2 e 3)
+    const allLabels = [];
+    for (let p = 1; p <= 3; p++) {
+      try {
+        const res = await listarEtiquetas({ page: p });
+        const items = Array.isArray(res) ? res : (res?.data || res?.orders || []);
+        if (Array.isArray(items) && items.length) {
+          allLabels.push(...items);
+        } else {
+          break;
+        }
+      } catch (lblErr) {
+        console.warn(`[SuperFrete] Aviso ao listar etiquetas página ${p}:`, lblErr);
+        break;
+      }
+    }
 
-        if (matchingOrder && !["Entregue", "Cancelado"].includes(matchingOrder.status)) {
-          let orderChanged = false;
-          if (lbl.id && !matchingOrder.superfreteOrderId) {
-            matchingOrder.superfreteOrderId = String(lbl.id);
-            orderChanged = true;
+    let ordersToSync = [];
+    if (orderId) {
+      const o = state.orders.find(item => item.id === orderId);
+      if (o) ordersToSync = [o];
+    } else {
+      // Sincroniza pedidos que não estão cancelados
+      ordersToSync = state.orders.filter(o => o.status !== "Cancelado");
+    }
+
+    if (!ordersToSync.length) {
+      if (isManual) alert('Nenhum pedido encontrado para rastrear.');
+      return { updated: 0 };
+    }
+
+    const statusTranslations = {
+      pending: "Pendente",
+      released: "Aguardando Postagem",
+      posted: "Postado / Em Trânsito",
+      delivered: "Entregue",
+      canceled: "Cancelado"
+    };
+
+    for (const order of ordersToSync) {
+      try {
+        // Tenta achar na lista em lote da SuperFrete primeiro
+        let lbl = allLabels.find(l => {
+          const sfId = l.order_id || l.id;
+          const matchId = sfId && order.superfreteOrderId && String(order.superfreteOrderId) === String(sfId);
+          const matchTracking = l.tracking && order.tracking && String(l.tracking).trim().toLowerCase() === String(order.tracking).trim().toLowerCase();
+          const matchName = l.to && l.to.name && order.client && cleanName(l.to.name) === cleanName(order.client);
+          const matchTag = Array.isArray(l.tags) && l.tags.some(t => (t.tag === order.id || t === order.id));
+          return matchId || matchTracking || matchName || matchTag;
+        });
+
+        // Se não encontrou na lista geral mas tem superfreteOrderId e ainda não foi entregue, consulta individualmente
+        if (!lbl && order.superfreteOrderId && order.status !== 'Entregue') {
+          try {
+            const single = await infosPedido(order.superfreteOrderId);
+            if (single) {
+              lbl = {
+                order_id: single.id || order.superfreteOrderId,
+                status: single.status,
+                tracking: single.tracking,
+                updated_at: single.updated_at,
+                delivered_at: single.delivered_at,
+                print: single.print
+              };
+            }
+          } catch (e) {
+            // ignora erro pontual
           }
-          if (lbl.tracking && matchingOrder.tracking !== lbl.tracking) {
-            matchingOrder.tracking = lbl.tracking;
-            orderChanged = true;
+        }
+
+        if (lbl) {
+          let changed = false;
+          const sfId = lbl.order_id || lbl.id;
+          if (sfId && !order.superfreteOrderId) {
+            order.superfreteOrderId = String(sfId);
+            changed = true;
           }
+
+          if (lbl.tracking && (!order.tracking || order.tracking !== lbl.tracking)) {
+            order.tracking = lbl.tracking;
+            changed = true;
+          }
+
           const rawStatus = String(lbl.status || "").toLowerCase();
+          const friendlyStatus = statusTranslations[rawStatus] || lbl.status;
+          if (friendlyStatus && order.superfreteStatus !== friendlyStatus) {
+            order.superfreteStatus = friendlyStatus;
+            changed = true;
+          }
+
+          if (lbl.print && lbl.print.url && order.superfreteLabelUrl !== lbl.print.url) {
+            order.superfreteLabelUrl = lbl.print.url;
+            changed = true;
+          }
+
+          // Se entregue pela transportadora
           if (rawStatus === 'delivered' || rawStatus.includes('entreg')) {
-            matchingOrder.status = 'Entregue';
-            matchingOrder.orderStatus = 'Entregue';
-            matchingOrder.actualDelivery = matchingOrder.actualDelivery || new Date().toISOString().slice(0, 10);
-            matchingOrder.history.unshift({
-              at: formatDateTime(new Date()),
-              text: `🎉 Encomenda entregue ao destinatário (SuperFrete Rastreio: ${matchingOrder.tracking || ''})`
-            });
-            orderChanged = true;
-            updatedCount++;
-          } else if (rawStatus === 'posted' || rawStatus.includes('postad')) {
-            if (["Novo Pedido", "Produção", "Postagem"].includes(getOrderWorkflowStatus(matchingOrder))) {
-              matchingOrder.status = 'Enviado';
-              matchingOrder.orderStatus = 'Enviado';
-              matchingOrder.history.unshift({
+            if (order.status !== 'Entregue' || getOrderWorkflowStatus(order) !== 'Entregue') {
+              order.status = 'Entregue';
+              order.orderStatus = 'Entregue';
+              const delDate = lbl.delivered_at ? lbl.delivered_at.slice(0, 10) : (lbl.updated_at ? lbl.updated_at.slice(0, 10) : new Date().toISOString().slice(0, 10));
+              order.actualDelivery = order.actualDelivery || delDate;
+              if (!Array.isArray(order.history)) order.history = [];
+              order.history.unshift({
                 at: formatDateTime(new Date()),
-                text: `🚚 Encomenda postada / Em trânsito (SuperFrete Rastreio: ${matchingOrder.tracking || ''})`
+                text: `🎉 Encomenda entregue ao destinatário (SuperFrete Rastreio: ${order.tracking || ''})`
               });
-              orderChanged = true;
+              changed = true;
+              updatedCount++;
+            }
+          } else if (rawStatus === 'posted' || rawStatus.includes('postad')) {
+            if (['Novo Pedido', 'Recebido', 'Produção', 'Postagem'].includes(getOrderWorkflowStatus(order))) {
+              order.status = 'Enviado';
+              order.orderStatus = 'Enviado';
+              if (!Array.isArray(order.history)) order.history = [];
+              order.history.unshift({
+                at: formatDateTime(new Date()),
+                text: `🚚 Encomenda postada / Em trânsito (SuperFrete Rastreio: ${order.tracking || ''})`
+              });
+              changed = true;
               updatedCount++;
             }
           }
-          if (orderChanged) {
-            await save([matchingOrder]);
+
+          if (changed) {
+            // Salva com segurança apenas colunas válidas no Supabase
+            try {
+              await supabase.from('orders').update({
+                status: order.status,
+                orderStatus: order.orderStatus,
+                actualDelivery: order.actualDelivery || null,
+                tracking: order.tracking || null,
+                history: order.history
+              }).eq('id', order.id);
+            } catch (dbErr) {
+              console.warn(`[SuperFrete Tracking] Erro ao gravar pedido ${order.id} no Supabase:`, dbErr);
+            }
           }
         }
+      } catch (err) {
+        console.warn(`[SuperFrete Tracking] Erro ao sincronizar pedido ${order.id}:`, err);
       }
     }
-  } catch (lblErr) {
-    console.warn('[SuperFrete] Aviso ao listar etiquetas da conta:', lblErr);
-  }
 
-  if (updatedCount > 0) {
+    // Atualiza cache local
+    try {
+      localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
+    } catch (e) {
+      // ignora
+    }
+
+    state.lastTrackingSync = new Date();
+    try {
+      localStorage.setItem("mpa:last_tracking_sync", state.lastTrackingSync.toISOString());
+    } catch (e) {}
+
+  } catch (globalErr) {
+    console.error('[SuperFrete Tracking] Erro na sincronização:', globalErr);
+  } finally {
+    state.isTrackingSyncing = false;
     render();
     if (state.selectedOrder) openDetails(state.selectedOrder);
   }
@@ -1343,9 +1379,14 @@ function renderDashboard() {
            <input type="text" id="dashboardSearch" placeholder="Buscar pedido, cliente, telefone..." style="flex:1; min-width:250px; padding: 12px; border-radius: 8px; border: none; font-size: 1rem; color: #1a1a1a;" />
            <button class="primary-button" data-open-order>Novo Pedido</button>
         </div>
-        <div class="quick-actions" style="display:flex; gap:8px; flex-wrap: wrap;">
+        <div class="quick-actions" style="display:flex; gap:8px; flex-wrap: wrap; align-items: center;">
           <button class="ghost-button" data-view="labels">Gerar Etiquetas 🏷️</button>
-          <button class="ghost-button" type="button" id="btnSyncAllTrackingDashboard">🔄 Atualizar Rastreios</button>
+          <button class="ghost-button" type="button" id="btnSyncAllTrackingDashboard" ${state.isTrackingSyncing ? 'disabled' : ''} title="Sincronizar status dos envios com a SuperFrete">
+            ${state.isTrackingSyncing ? '⏳ Atualizando...' : '🔄 Atualizar Rastreios'}
+          </button>
+          <span class="tracking-sync-badge" title="Sincronização em segundo plano ativa a cada 10 min">
+            <span class="dot"></span> ${getLastTrackingSyncText()}
+          </span>
           <button class="ghost-button" data-view="expenses" onclick="setTimeout(()=>document.getElementById('newExpenseBtn')?.click(),100)">Adicionar Despesa</button>
           <button class="ghost-button" data-view="products" onclick="setTimeout(()=>document.getElementById('newProductBtn')?.click(),100)">Cadastrar Produto</button>
         </div>
@@ -1476,7 +1517,12 @@ function renderOrders() {
         <button class="ghost-button" type="button" data-toggle-view title="${state.viewMode === 'list' ? 'Exibir em cartões pequenos' : 'Exibir em lista'}">
           ${state.viewMode === 'list' ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>' : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>'}
         </button>
-        <button class="ghost-button" type="button" id="btnSyncAllTracking" title="Verificar status de entrega dos envios na SuperFrete">🔄 Atualizar Rastreios</button>
+        <button class="ghost-button" type="button" id="btnSyncAllTracking" title="Verificar status de entrega dos envios na SuperFrete" ${state.isTrackingSyncing ? 'disabled' : ''}>
+          ${state.isTrackingSyncing ? '⏳ Atualizando...' : '🔄 Atualizar Rastreios'}
+        </button>
+        <span class="tracking-sync-badge" title="Sincronização em segundo plano ativa a cada 10 min">
+          <span class="dot"></span> ${getLastTrackingSyncText()}
+        </span>
         <button class="primary-button" type="button" data-open-order>Novo pedido</button>
       </div>
       ${state.viewMode === 'list' ? `
@@ -3983,7 +4029,7 @@ function bindEvents() {
         target.textContent = originalText;
       });
     }
-    if (target.id === "btnSyncAllTracking" || target.id === "btnSyncAllTrackingDashboard") {
+    if (target.id === "btnSyncAllTracking" || target.id === "btnSyncAllTrackingDashboard" || target.id === "btnSyncAllTrackingShipping") {
       target.disabled = true;
       const originalText = target.textContent;
       target.textContent = "🔄 Atualizando...";
@@ -4658,6 +4704,28 @@ async function checkAuth() {
         setTimeout(() => {
           syncTrackingSuperfrete({ isManual: false });
         }, 3500);
+
+        // Intervalo periódico em segundo plano a cada 10 minutos
+        if (!window.__trackingSyncInterval) {
+          window.__trackingSyncInterval = setInterval(() => {
+            console.log('[Tracking] Sincronização automática em segundo plano iniciada...');
+            syncTrackingSuperfrete({ isManual: false });
+          }, 10 * 60 * 1000);
+        }
+
+        // Checar ao reativar aba do navegador se passou mais de 10 minutos
+        if (!window.__trackingVisibilityBound) {
+          window.__trackingVisibilityBound = true;
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+              const elapsed = Date.now() - (state.lastTrackingSync ? new Date(state.lastTrackingSync).getTime() : 0);
+              if (elapsed > 10 * 60 * 1000) {
+                console.log('[Tracking] Aba reativada após mais de 10 min, sincronizando...');
+                syncTrackingSuperfrete({ isManual: false });
+              }
+            }
+          });
+        }
       }
     } else {
       document.getElementById('loginScreen').style.display = 'flex';
@@ -4968,11 +5036,17 @@ function renderShipping() {
           <h2>Controle de Envio</h2>
           <p class="muted">Acompanhe a logística e os despachos dos pedidos concluídos. 📦</p>
         </div>
-        <div class="production-toolbar-new">
+        <div class="production-toolbar-new" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <div class="search-wrap">
             <span class="search-icon-new">🔍</span>
             <input id="shippingSearch" class="search-input-new" placeholder="Buscar envio..." value="${escapeHtml(state.shippingSearch)}" />
           </div>
+          <button class="ghost-button" type="button" id="btnSyncAllTrackingShipping" ${state.isTrackingSyncing ? 'disabled' : ''} style="margin-left:auto;" title="Verificar status de entrega dos envios na SuperFrete">
+            ${state.isTrackingSyncing ? '⏳ Atualizando...' : '🔄 Atualizar Rastreios'}
+          </button>
+          <span class="tracking-sync-badge" title="Sincronização em segundo plano ativa a cada 10 min">
+            <span class="dot"></span> ${getLastTrackingSyncText()}
+          </span>
         </div>
       </div>
 
