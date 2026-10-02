@@ -631,9 +631,14 @@ async function testSuperfreteConnection() {
   }
 }
 
-async function handleGenerateLabel(orderId) {
+let currentLabelModalOrder = null;
+let currentLabelQuotes = [];
+let selectedLabelServiceId = 1; // 1=PAC, 2=SEDEX, 17=Mini, 31=LOGGI
+
+async function openLabelModal(orderId) {
   const order = state.orders.find(o => o.id === orderId);
   if (!order) return;
+  currentLabelModalOrder = order;
 
   const cfg = state.superfreteConfig || {};
   if (!cfg.enabled || !cfg.token) {
@@ -652,38 +657,260 @@ async function handleGenerateLabel(orderId) {
     return;
   }
 
-  // Validação obrigatória de CPF/CNPJ exigido pelas transportadoras
-  let cleanDoc = String(order.cpf || '').replace(/\D/g, '');
-  if (!cleanDoc || (cleanDoc.length !== 11 && cleanDoc.length !== 14)) {
-    const inputCpf = window.prompt(
-      `O CPF/CNPJ do destinatário (${order.client}) é obrigatório para emissão da etiqueta na transportadora.\n\nPor favor, informe o CPF (11 dígitos):`,
-      order.cpf || ''
-    );
-    if (!inputCpf) {
-      alert('Operação cancelada: CPF não informado.');
-      return;
-    }
-    cleanDoc = String(inputCpf).replace(/\D/g, '');
-    if (cleanDoc.length !== 11 && cleanDoc.length !== 14) {
-      alert('CPF inválido. Um CPF deve conter 11 dígitos numéricos.');
-      return;
-    }
-    order.cpf = cleanDoc;
-    save();
-  }
+  const qty = Math.max(Number(order.quantity) || 1, 1);
+  const baseHeight = Number(cfg.alturaDefault) || 2;
+  const baseWidth = Number(cfg.larguraDefault) || 12;
+  const baseLength = Number(cfg.comprimentoDefault) || 18;
+  const baseWeight = Number(cfg.pesoDefault) || 0.03;
 
-  const confirmed = window.confirm(`Gerar etiqueta SuperFrete para o pedido ${order.id} (${order.client})?\n\nDestino: ${order.address}, ${order.number} - ${order.city}/${order.state} - CEP: ${order.cep}\nCPF: ${cleanDoc}`);
-  if (!confirmed) return;
+  // Sugestão automática para mais de 1 item
+  const initHeight = qty > 1 ? Math.min(baseHeight + (qty - 1) * 1.5, 60) : baseHeight;
+  const initWeight = qty > 1 ? +(baseWeight * qty).toFixed(2) : baseWeight;
+
+  // Pré-selecionar transportadora de acordo com o pedido, se houver
+  const methodUpper = String(order.shippingMethod || '').toUpperCase();
+  if (methodUpper.includes('SEDEX')) selectedLabelServiceId = 2;
+  else if (methodUpper.includes('MINI')) selectedLabelServiceId = 17;
+  else if (methodUpper.includes('LOGGI')) selectedLabelServiceId = 31;
+  else selectedLabelServiceId = 1;
+
+  const modal = document.getElementById('labelModal');
+  if (!modal) return;
+
+  renderLabelModalUI(order, initHeight, baseWidth, baseLength, initWeight, qty);
+  modal.showModal();
+
+  // Já busca as cotações em tempo real da SuperFrete
+  fetchLabelQuotes();
+}
+
+function renderLabelModalUI(order, height, width, length, weight, qty) {
+  const modal = document.getElementById('labelModal');
+  if (!modal) return;
+
+  const cleanDoc = String(order.cpf || '').trim();
+
+  modal.innerHTML = `
+    <article class="label-modal-card">
+      <div class="label-modal-head">
+        <div>
+          <span class="eyebrow">Etiqueta de Envio • SuperFrete</span>
+          <h2 style="font-size:1.25rem;margin:0;">Pedido #${order.id.split('-').pop() || order.id} - ${escapeHtml(order.client)}</h2>
+        </div>
+        <button class="ghost-button" type="button" data-close-label-modal style="padding:4px 10px;font-size:1.1rem;" title="Fechar">✕</button>
+      </div>
+
+      <div class="label-modal-body">
+        <!-- Destinatário e CPF -->
+        <div class="label-dest-box">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+            <div>
+              <b>Destinatário:</b> ${escapeHtml(order.client)} ${order.whatsapp ? `• (${escapeHtml(order.whatsapp)})` : ''}<br>
+              <span style="color:var(--muted);font-size:0.84rem;">📍 ${escapeHtml(order.address)}, ${escapeHtml(order.number)}${order.complement ? ' - ' + escapeHtml(order.complement) : ''} • ${escapeHtml(order.neighborhood || '')}, ${escapeHtml(order.city || '')}/${escapeHtml(order.state || 'SP')} - CEP: ${escapeHtml(order.cep || '')}</span>
+            </div>
+          </div>
+          <div style="margin-top:10px; display:flex; flex-direction:column; gap:4px;">
+            <label for="lblModalCpf" style="font-weight:700;font-size:0.82rem;color:var(--ink);">CPF/CNPJ do Destinatário: <span style="color:#ef4444;">* (Obrigatório)</span></label>
+            <input id="lblModalCpf" class="cell-input" style="padding:7px 10px; border:1px solid var(--line); border-radius:8px; width:100%; max-width:260px;" value="${escapeHtml(cleanDoc)}" placeholder="000.000.000-00" />
+            <small style="color:var(--muted);font-size:0.75rem;">Exigido legalmente pelas transportadoras para a declaração de conteúdo.</small>
+          </div>
+        </div>
+
+        <!-- Dimensões do Pacote & Quantidade -->
+        <div class="package-config-box">
+          ${qty > 1 ? `
+            <div class="package-qty-badge">
+              📦 <b>Pedido com ${qty} itens</b> • O tamanho e peso do pacote foram sugeridos proporcionalmente. Ajuste se necessário:
+            </div>
+          ` : `
+            <div class="package-qty-badge">
+              📦 <b>Tamanho do Pacote (1 item)</b> • Dimensões e peso para cálculo da transportadora:
+            </div>
+          `}
+
+          <div class="package-dim-grid">
+            <div class="dim-field">
+              <label for="lblModalHeight">Altura (cm)</label>
+              <input type="number" id="lblModalHeight" value="${height}" step="0.5" min="1" max="100" />
+            </div>
+            <div class="dim-field">
+              <label for="lblModalWidth">Largura (cm)</label>
+              <input type="number" id="lblModalWidth" value="${width}" step="0.5" min="8" max="100" />
+            </div>
+            <div class="dim-field">
+              <label for="lblModalLength">Compr. (cm)</label>
+              <input type="number" id="lblModalLength" value="${length}" step="0.5" min="13" max="100" />
+            </div>
+            <div class="dim-field">
+              <label for="lblModalWeight">Peso (kg)</label>
+              <input type="number" id="lblModalWeight" value="${weight}" step="0.01" min="0.01" max="30" />
+            </div>
+          </div>
+
+          <div style="display:flex; justify-content:flex-end;">
+            <button class="ghost-button" type="button" id="btnRecalcLabelQuotes" style="font-size:0.82rem;padding:6px 12px;">
+              🔄 Recalcular Fretes com Estas Medidas
+            </button>
+          </div>
+        </div>
+
+        <!-- Seleção de Transportadora -->
+        <div>
+          <h4 style="margin:0 0 8px 0;font-size:0.95rem;display:flex;align-items:center;gap:6px;">
+            <span>🚚 Escolha a Transportadora / Serviço:</span>
+          </h4>
+          <div id="lblModalQuotesContainer">
+            <div style="padding:20px;text-align:center;color:var(--muted);font-size:0.9rem;">
+              ⏳ Consultando opções e prazos na SuperFrete em tempo real...
+            </div>
+          </div>
+        </div>
+
+        <div id="lblModalFeedback" style="font-size:0.85rem;color:#b91c1c;display:none;padding:8px 12px;background:#fef2f2;border-radius:8px;"></div>
+      </div>
+
+      <div class="label-modal-foot">
+        <button class="ghost-button" type="button" data-close-label-modal>Cancelar</button>
+        <button class="primary-button" type="button" id="btnSubmitGenerateLabel" style="min-width:180px;">
+          🏷️ Emitir Etiqueta
+        </button>
+      </div>
+    </article>
+  `;
+}
+
+async function fetchLabelQuotes() {
+  const container = document.getElementById('lblModalQuotesContainer');
+  if (!container || !currentLabelModalOrder) return;
+
+  container.innerHTML = `
+    <div style="padding:16px;text-align:center;color:var(--muted);font-size:0.88rem;">
+      <span class="inline-spinner" style="margin-right:6px;">⏳</span> Calculando valores e prazos na SuperFrete...
+    </div>
+  `;
+
+  const cfg = state.superfreteConfig || {};
+  const height = Number(document.getElementById('lblModalHeight')?.value) || 2;
+  const width = Number(document.getElementById('lblModalWidth')?.value) || 12;
+  const length = Number(document.getElementById('lblModalLength')?.value) || 18;
+  const weight = Number(document.getElementById('lblModalWeight')?.value) || 0.03;
 
   try {
     syncSuperfreteConfig();
-    
-    let serviceId = 1; // PAC default
-    const methodUpper = String(order.shippingMethod || '').toUpperCase();
-    if (methodUpper.includes('SEDEX')) serviceId = 2;
-    else if (methodUpper.includes('MINI')) serviceId = 17;
-    else if (methodUpper.includes('LOGGI')) serviceId = 33;
-    else if (methodUpper.includes('PAC')) serviceId = 1;
+    const quotes = await calcularFrete({
+      cepOrigem: cfg.cepOrigem || '08140060',
+      cepDestino: currentLabelModalOrder.cep,
+      peso: weight,
+      altura: height,
+      largura: width,
+      comprimento: length
+    });
+
+    currentLabelQuotes = Array.isArray(quotes) ? quotes : [];
+
+    if (!currentLabelQuotes.length) {
+      container.innerHTML = `
+        <div style="padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:0.85rem;color:#92400e;">
+          ⚠️ Nenhuma cotação retornada para este CEP. Verifique o CEP de destino ou tente recalcular.
+        </div>
+      `;
+      return;
+    }
+
+    // Se o serviço previamente selecionado não estiver na lista de cotações, seleciona o primeiro disponível
+    if (!currentLabelQuotes.some(q => q.id === selectedLabelServiceId)) {
+      selectedLabelServiceId = currentLabelQuotes[0].id;
+    }
+
+    renderCarrierQuotesCards();
+    updateSubmitButtonText();
+  } catch (err) {
+    console.error('[SuperFrete Modal] Erro ao cotar:', err);
+    container.innerHTML = `
+      <div style="padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:0.85rem;color:#991b1b;">
+        ❌ Falha ao calcular fretes: ${escapeHtml(err.message || 'Erro inesperado')}.<br>
+        <button class="ghost-button" type="button" id="btnRetryLabelQuotes" style="margin-top:6px;font-size:0.8rem;">Tentar novamente</button>
+      </div>
+    `;
+  }
+}
+
+function renderCarrierQuotesCards() {
+  const container = document.getElementById('lblModalQuotesContainer');
+  if (!container) return;
+
+  const badgeClass = (name = "") => {
+    const upper = name.toUpperCase();
+    if (upper.includes("SEDEX")) return "badge-sedex";
+    if (upper.includes("MINI")) return "badge-mini";
+    if (upper.includes("LOGGI")) return "badge-loggi";
+    return "badge-pac";
+  };
+
+  container.innerHTML = `
+    <div class="carrier-options-grid">
+      ${currentLabelQuotes.map(q => {
+        const isSelected = q.id === selectedLabelServiceId;
+        const days = q.deliveryMax || q.deliveryMin || 0;
+        return `
+          <button type="button" class="carrier-quote-card ${isSelected ? 'selected' : ''}" data-carrier-id="${q.id}">
+            <span class="quote-badge ${badgeClass(q.name)}">${escapeHtml(q.name)}</span>
+            <span style="font-size:0.75rem;color:var(--muted);margin-top:3px;">${escapeHtml(q.company || 'Transportadora')}</span>
+            <span class="quote-price" style="font-size:1.05rem;margin:4px 0 2px 0;">R$ ${Number(q.price).toFixed(2).replace('.', ',')}</span>
+            <span class="quote-deadline" style="font-size:0.75rem;">${days ? `Até ${days} ${days === 1 ? 'dia útil' : 'dias úteis'}` : 'Prazo sob consulta'}</span>
+          </button>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function updateSubmitButtonText() {
+  const btn = document.getElementById('btnSubmitGenerateLabel');
+  if (!btn) return;
+  const selectedQuote = currentLabelQuotes.find(q => q.id === selectedLabelServiceId);
+  const name = selectedQuote ? selectedQuote.name : (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC');
+  const price = selectedQuote ? ` • R$ ${Number(selectedQuote.price).toFixed(2).replace('.', ',')}` : '';
+  btn.textContent = `🏷️ Emitir Etiqueta (${name}${price})`;
+}
+
+async function confirmGenerateLabel() {
+  if (!currentLabelModalOrder) return;
+  const order = currentLabelModalOrder;
+  const cfg = state.superfreteConfig || {};
+
+  const feedback = document.getElementById('lblModalFeedback');
+  const submitBtn = document.getElementById('btnSubmitGenerateLabel');
+
+  const cleanDoc = String(document.getElementById('lblModalCpf')?.value || '').replace(/\D/g, '');
+  if (cleanDoc.length !== 11 && cleanDoc.length !== 14) {
+    if (feedback) {
+      feedback.style.display = 'block';
+      feedback.textContent = 'O CPF/CNPJ é obrigatório e deve conter 11 dígitos numéricos.';
+    }
+    document.getElementById('lblModalCpf')?.focus();
+    return;
+  }
+
+  // Atualiza e salva o CPF informado
+  order.cpf = cleanDoc;
+
+  const height = Number(document.getElementById('lblModalHeight')?.value) || 2;
+  const width = Number(document.getElementById('lblModalWidth')?.value) || 12;
+  const length = Number(document.getElementById('lblModalLength')?.value) || 18;
+  const weight = Number(document.getElementById('lblModalWeight')?.value) || 0.03;
+
+  if (feedback) feedback.style.display = 'none';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = '⏳ Emitindo etiqueta na SuperFrete...';
+  }
+
+  try {
+    syncSuperfreteConfig();
+
+    const selectedQuote = currentLabelQuotes.find(q => q.id === selectedLabelServiceId);
+    const serviceName = selectedQuote?.name || (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC');
 
     const cartResult = await criarFrete({
       from: {
@@ -702,7 +929,7 @@ async function handleGenerateLabel(orderId) {
         name: order.client,
         phone: String(order.whatsapp || '11999999999').replace(/\D/g, '') || '11999999999',
         document: cleanDoc,
-        postalCode: cleanCep,
+        postalCode: String(order.cep || '').replace(/\D/g, ''),
         address: order.address,
         number: order.number || 'S/N',
         complement: order.complement || '',
@@ -711,13 +938,8 @@ async function handleGenerateLabel(orderId) {
         stateAbbr: (order.state || 'SP').toUpperCase().trim(),
         countryId: 'BR'
       },
-      service: serviceId,
-      package: {
-        height: Number(cfg.alturaDefault || 2),
-        width: Number(cfg.larguraDefault || 12),
-        length: Number(cfg.comprimentoDefault || 18),
-        weight: Number(cfg.pesoDefault || 0.03)
-      },
+      service: selectedLabelServiceId,
+      package: { height, width, length, weight },
       products: [
         {
           name: order.product || 'Chaveiro Pet Personalizado',
@@ -735,9 +957,10 @@ async function handleGenerateLabel(orderId) {
 
     order.superfreteOrderId = String(superfreteOrderId);
     order.superfreteStatus = 'Carrinho criado';
+    order.shippingMethod = serviceName;
     save();
 
-    // Finalização e emissão no checkout da SuperFrete
+    // Finalizar no checkout da SuperFrete
     try {
       const checkoutResult = await finalizarPedido({ orders: [order.superfreteOrderId] });
       if (checkoutResult && (checkoutResult.tracking || checkoutResult.protocol)) {
@@ -746,12 +969,14 @@ async function handleGenerateLabel(orderId) {
       }
     } catch (checkoutErr) {
       console.warn('[SuperFrete] Erro no checkout:', checkoutErr);
-      alert(`⚠️ O frete foi criado com sucesso no carrinho (ID: ${order.superfreteOrderId}), porém a emissão/pagamento não foi concluída:\n\n${checkoutErr.message}\n\nVerifique se há saldo disponível na sua carteira SuperFrete para emitir a etiqueta.`);
+      alert(`⚠️ Frete adicionado ao carrinho na SuperFrete (ID: ${order.superfreteOrderId}), porém a emissão imediata não foi concluída:\n\n${checkoutErr.message}\n\nVerifique o saldo disponível na sua carteira da SuperFrete.`);
+      document.getElementById('labelModal')?.close();
+      render();
       openDetails(order.id);
       return;
     }
 
-    // Tenta obter link de impressão
+    // Tentar obter link do PDF
     try {
       const printResult = await imprimirEtiqueta({ orders: [order.superfreteOrderId] });
       if (printResult && printResult.url) {
@@ -761,18 +986,36 @@ async function handleGenerateLabel(orderId) {
       console.warn('[SuperFrete] Aviso ao buscar link de impressão:', printErr);
     }
 
+    if (!Array.isArray(order.history)) order.history = [];
     order.history.unshift({
       at: formatDateTime(new Date()),
-      text: `Etiqueta SuperFrete gerada (ID: ${order.superfreteOrderId})`
+      text: `Etiqueta SuperFrete (${serviceName}) gerada (ID: ${order.superfreteOrderId})`
     });
 
     save();
+    document.getElementById('labelModal')?.close();
+    render();
     openDetails(order.id);
-    alert(`✅ Etiqueta SuperFrete criada com sucesso!\nID: ${order.superfreteOrderId}${order.superfreteLabelUrl ? '\nVocê já pode visualizar o PDF no detalhe do pedido.' : ''}`);
+
+    alert(`✅ Etiqueta SuperFrete (${serviceName}) criada com sucesso!\nID: ${order.superfreteOrderId}${order.superfreteLabelUrl ? '\n\nO PDF da etiqueta já está disponível nos detalhes do pedido.' : ''}`);
   } catch (err) {
-    console.error('[SuperFrete] Erro ao gerar etiqueta:', err);
-    alert(`❌ Falha ao gerar etiqueta:\n${err.message || 'Erro inesperado'}`);
+    console.error('[SuperFrete] Erro ao emitir etiqueta:', err);
+    if (feedback) {
+      feedback.style.display = 'block';
+      feedback.textContent = `Falha ao emitir etiqueta: ${err.message || 'Erro inesperado'}`;
+    } else {
+      alert(`❌ Falha ao emitir etiqueta: ${err.message || 'Erro inesperado'}`);
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      updateSubmitButtonText();
+    }
   }
+}
+
+function handleGenerateLabel(orderId) {
+  openLabelModal(orderId);
 }
 
 function getLastTrackingSyncText() {
@@ -4488,7 +4731,25 @@ function bindEvents() {
     if (event.target.id === "resetExpenseExamples") resetExpenseExamples();
     if (event.target.id === "btnCalcFrete" || event.target.closest("#btnCalcFrete")) handleCalcFrete();
     if (event.target.id === "btnTestSuperfrete" || event.target.closest("#btnTestSuperfrete")) testSuperfreteConnection();
-    if (event.target.dataset.generateLabel) handleGenerateLabel(event.target.dataset.generateLabel);
+    if (event.target.dataset.generateLabel || event.target.closest('[data-generate-label]')) {
+      const btn = event.target.closest('[data-generate-label]') || event.target;
+      handleGenerateLabel(btn.dataset.generateLabel);
+    }
+    if (event.target.dataset.closeLabelModal || event.target.closest('[data-close-label-modal]')) {
+      document.getElementById('labelModal')?.close();
+    }
+    if (event.target.id === 'btnRecalcLabelQuotes' || event.target.closest('#btnRecalcLabelQuotes') || event.target.id === 'btnRetryLabelQuotes') {
+      fetchLabelQuotes();
+    }
+    const carrierCard = event.target.closest('.carrier-quote-card');
+    if (carrierCard && carrierCard.dataset.carrierId) {
+      selectedLabelServiceId = Number(carrierCard.dataset.carrierId);
+      renderCarrierQuotesCards();
+      updateSubmitButtonText();
+    }
+    if (event.target.id === 'btnSubmitGenerateLabel' || event.target.closest('#btnSubmitGenerateLabel')) {
+      confirmGenerateLabel();
+    }
     const quoteCard = event.target.closest(".superfrete-quote-card");
     if (quoteCard && quoteCard.dataset.quoteIndex !== undefined) {
       selectSuperfreteQuote(Number(quoteCard.dataset.quoteIndex));
