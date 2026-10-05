@@ -1,5 +1,6 @@
 import { supabase, supabaseAuthClient } from './supabase.js';
 import { calcularFrete, criarFrete, finalizarPedido, imprimirEtiqueta, infosPedido, listarEtiquetas, obterLinkRastreio, cancelarPedido, getConfig as getSuperfreteConfig, saveConfig as saveSuperfreteConfig } from './superfrete.js';
+import { getUazapiConfig, saveUazapiConfig, sendWhatsAppText, sendWhatsAppMedia, testUazapiConnection, formatWhatsAppNumber, UAZAPI_TEMPLATES, renderTemplate, getCustomTemplates, saveCustomTemplates } from './uazapi.js';
 
 const STATUS = [
   "Novo Pedido",
@@ -95,17 +96,62 @@ const state = {
   ,superfreteConfig: load("superfrete_config", {
     token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3ODc2NjExNDEsInN1YiI6IkVNR0dEM1AzUE5hUHZYMUdJQkpsVFZOREtXNzMifQ.BD_cL4gAhkybMnrighonm8zHMJhTptIbko4lS7JExgc",
     cepOrigem: "08140060",
-    pesoDefault: 0.03,
+    pesoDefault: 0.3,
     alturaDefault: 2,
     larguraDefault: 12,
     comprimentoDefault: 18,
     sandbox: false,
-    enabled: true
+    enabled: true,
+    remetenteNome: "Karoline Gonçalves Garcia",
+    remetenteTelefone: "11940878269",
+    remetenteEmail: "contato@meupetemarte.com.br",
+    remetenteEndereco: "Rua Antônio João de Medeiros",
+    remetenteNumero: "700A",
+    remetenteComplemento: "Casa 83",
+    remetenteBairro: "Itaim Paulista",
+    remetenteCidade: "São Paulo",
+    remetenteUF: "SP"
   })
   ,superfreteQuotes: []
   ,lastTrackingSync: load("last_tracking_sync", null)
   ,isTrackingSyncing: false
+  ,uazapiConfig: load("uazapi_config", getUazapiConfig())
+  ,uazapiCustomTemplates: load("uazapi_custom_templates", getCustomTemplates())
 };
+
+// Assegura migração de endereço de remetente caso esteja vazio ou com valores placeholders antigos
+if (state.superfreteConfig) {
+  if (!state.superfreteConfig.pesoDefault || state.superfreteConfig.pesoDefault === 0.03) {
+    state.superfreteConfig.pesoDefault = 0.3;
+  }
+  if (!state.superfreteConfig.remetenteNome || state.superfreteConfig.remetenteNome === 'Meu Pet em Arte') {
+    state.superfreteConfig.remetenteNome = 'Karoline Gonçalves Garcia';
+  }
+  if (!state.superfreteConfig.remetenteTelefone || state.superfreteConfig.remetenteTelefone === '11999999999') {
+    state.superfreteConfig.remetenteTelefone = '11940878269';
+  }
+  if (!state.superfreteConfig.remetenteEndereco || state.superfreteConfig.remetenteEndereco === 'Rua Principal') {
+    state.superfreteConfig.remetenteEndereco = 'Rua Antônio João de Medeiros';
+  }
+  if (!state.superfreteConfig.remetenteNumero || state.superfreteConfig.remetenteNumero === '100') {
+    state.superfreteConfig.remetenteNumero = '700A';
+  }
+  if (!state.superfreteConfig.remetenteComplemento) {
+    state.superfreteConfig.remetenteComplemento = 'Casa 83';
+  }
+  if (!state.superfreteConfig.remetenteBairro || state.superfreteConfig.remetenteBairro === 'Centro') {
+    state.superfreteConfig.remetenteBairro = 'Itaim Paulista';
+  }
+  if (!state.superfreteConfig.remetenteCidade) {
+    state.superfreteConfig.remetenteCidade = 'São Paulo';
+  }
+  if (!state.superfreteConfig.remetenteUF) {
+    state.superfreteConfig.remetenteUF = 'SP';
+  }
+  if (!state.superfreteConfig.cepOrigem) {
+    state.superfreteConfig.cepOrigem = '08140060';
+  }
+}
 
 // viewMode: 'list' or 'cards' (cards = small cards)
 state.viewMode = load("orders_view_mode", state.compactCards ? "cards" : "list");
@@ -318,7 +364,7 @@ function load(key, fallback) {
   }
 }
 
-async function batchUpsert(table, items, chunkSize = 5) {
+async function batchUpsert(table, items, chunkSize = 2) {
   if (!items || items.length === 0) return;
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize);
@@ -333,6 +379,102 @@ async function saveSettings(key, value) {
   } catch (err) { console.error(err); }
 }
 
+// Fila para serializar gravações de pedidos no Supabase e evitar locks/statement timeouts
+const pendingOrdersQueue = new Map();
+let isProcessingOrdersQueue = false;
+
+function formatOrderForDb(o) {
+  const historyCopy = Array.isArray(o.history) ? [...o.history] : [];
+  const extraMeta = {
+    cpf: o.cpf || "",
+    cep: o.cep || "",
+    address: o.address || "",
+    number: o.number || "",
+    complement: o.complement || "",
+    neighborhood: o.neighborhood || "",
+    city: o.city || "",
+    state: o.state || "",
+    shippingMethod: o.shippingMethod || "",
+    shippingDeadlineMin: o.shippingDeadlineMin || 0,
+    shippingDeadlineMax: o.shippingDeadlineMax || 0,
+    superfreteLabelId: o.superfreteLabelId || "",
+    superfreteLabelUrl: o.superfreteLabelUrl || "",
+    superfreteOrderId: o.superfreteOrderId || "",
+    superfreteStatus: o.superfreteStatus || ""
+  };
+  const metaIdx = historyCopy.findIndex(h => h && h._isMeta);
+  if (metaIdx >= 0) {
+    historyCopy[metaIdx] = { _isMeta: true, meta: extraMeta, at: historyCopy[metaIdx].at || new Date().toISOString() };
+  } else {
+    historyCopy.push({ _isMeta: true, meta: extraMeta, at: new Date().toISOString() });
+  }
+  return {
+    id: o.id,
+    client: o.client,
+    whatsapp: o.whatsapp || "",
+    product: o.product,
+    quantity: o.quantity,
+    unitValue: o.unitValue,
+    totalSale: o.totalSale,
+    shipping: o.shipping,
+    totalWithShipping: o.totalWithShipping,
+    payment: o.payment,
+    date: o.date,
+    delivery: o.delivery,
+    actualDelivery: o.actualDelivery || "",
+    tracking: o.tracking || "",
+    status: o.status,
+    productionTime: o.productionTime,
+    material: o.material,
+    notes: o.notes || "",
+    priority: o.priority || "Média",
+    petName: o.petName || "",
+    petNames: o.petNames || [],
+    petPhoto: o.petPhoto || "",
+    petPhotos: o.petPhotos || [],
+    generatedArt: o.generatedArt || "",
+    keychainMockup: o.keychainMockup || "",
+    keychainMockupName: o.keychainMockupName || null,
+    history: historyCopy,
+    orderStatus: o.orderStatus || null,
+    productionDone: o.productionDone || null,
+    paintDone: o.paintDone || null,
+    shippingUF: o.shippingUF || o.state || "",
+    shippingExpenseId: o.shippingExpenseId || "",
+    shippingExpenseName: o.shippingExpenseName || "",
+    shippingExcludedFromReport: o.shippingExcludedFromReport !== false,
+    created_at: o.created_at || new Date().toISOString()
+  };
+}
+
+async function processOrdersQueue() {
+  if (isProcessingOrdersQueue) return;
+  isProcessingOrdersQueue = true;
+
+  try {
+    while (pendingOrdersQueue.size > 0) {
+      // Pega até 2 pedidos por vez para manter as requisições leves e evitar timeout de statement no PostgreSQL
+      const batchEntries = Array.from(pendingOrdersQueue.entries()).slice(0, 2);
+      batchEntries.forEach(([id]) => pendingOrdersQueue.delete(id));
+
+      const payload = batchEntries.map(([, order]) => formatOrderForDb(order));
+      const { error } = await supabase.from('orders').upsert(payload);
+      if (error) {
+        console.error("Erro ao salvar lote de pedidos no Supabase:", error);
+        throw new Error(error.message);
+      }
+    }
+  } catch (err) {
+    console.error("Erro ao processar fila de pedidos do Supabase:", err);
+    alert("Erro ao salvar no banco de dados (Supabase). " + err.message);
+  } finally {
+    isProcessingOrdersQueue = false;
+    if (pendingOrdersQueue.size > 0) {
+      processOrdersQueue();
+    }
+  }
+}
+
 async function save(target = null) {
   try {
     try {
@@ -340,78 +482,34 @@ async function save(target = null) {
     } catch (e) {
       console.warn("Aviso: Limite de armazenamento local excedido. Os dados ainda serão salvos no banco de dados.", e);
     }
-    const items = target ? (Array.isArray(target) ? target : [target]) : state.orders;
-    if (items.length > 0) {
-      const payload = items.map(o => {
-        const historyCopy = Array.isArray(o.history) ? [...o.history] : [];
-        const extraMeta = {
-          cpf: o.cpf || "",
-          cep: o.cep || "",
-          address: o.address || "",
-          number: o.number || "",
-          complement: o.complement || "",
-          neighborhood: o.neighborhood || "",
-          city: o.city || "",
-          state: o.state || "",
-          shippingMethod: o.shippingMethod || "",
-          shippingDeadlineMin: o.shippingDeadlineMin || 0,
-          shippingDeadlineMax: o.shippingDeadlineMax || 0,
-          superfreteLabelId: o.superfreteLabelId || "",
-          superfreteLabelUrl: o.superfreteLabelUrl || "",
-          superfreteOrderId: o.superfreteOrderId || "",
-          superfreteStatus: o.superfreteStatus || ""
-        };
-        const metaIdx = historyCopy.findIndex(h => h && h._isMeta);
-        if (metaIdx >= 0) {
-          historyCopy[metaIdx] = { _isMeta: true, meta: extraMeta, at: historyCopy[metaIdx].at || new Date().toISOString() };
-        } else {
-          historyCopy.push({ _isMeta: true, meta: extraMeta, at: new Date().toISOString() });
-        }
-        return {
-          id: o.id,
-          client: o.client,
-          whatsapp: o.whatsapp || "",
-          product: o.product,
-          quantity: o.quantity,
-          unitValue: o.unitValue,
-          totalSale: o.totalSale,
-          shipping: o.shipping,
-          totalWithShipping: o.totalWithShipping,
-          payment: o.payment,
-          date: o.date,
-          delivery: o.delivery,
-          actualDelivery: o.actualDelivery || "",
-          tracking: o.tracking || "",
-          status: o.status,
-          productionTime: o.productionTime,
-          material: o.material,
-          notes: o.notes || "",
-          priority: o.priority || "Média",
-          petName: o.petName || "",
-          petNames: o.petNames || [],
-          petPhoto: o.petPhoto || "",
-          petPhotos: o.petPhotos || [],
-          generatedArt: o.generatedArt || "",
-          keychainMockup: o.keychainMockup || "",
-          keychainMockupName: o.keychainMockupName || null,
-          history: historyCopy,
-          orderStatus: o.orderStatus || null,
-          productionDone: o.productionDone || null,
-          paintDone: o.paintDone || null,
-          shippingUF: o.shippingUF || o.state || "",
-          shippingExpenseId: o.shippingExpenseId || "",
-          shippingExpenseName: o.shippingExpenseName || "",
-          shippingExcludedFromReport: o.shippingExcludedFromReport !== false,
-          created_at: o.created_at || new Date().toISOString()
-        };
+
+    if (target) {
+      const items = Array.isArray(target) ? target : [target];
+      items.forEach(o => {
+        if (o && o.id) pendingOrdersQueue.set(o.id, o);
       });
-      await batchUpsert('orders', payload, 5);
+    } else {
+      // Se chamado sem target específico, salva apenas os pedidos já pendentes na fila
+      if (pendingOrdersQueue.size === 0) {
+        runAutoBackup();
+        return;
+      }
     }
+
     runAutoBackup();
+    await processOrdersQueue();
   } catch (err) {
     console.error("Erro ao salvar no Supabase:", err);
     alert("Erro ao salvar no banco de dados (Supabase). " + err.message);
   }
+}
+
+let trackingSaveTimeout = null;
+function debouncedSaveTracking(order) {
+  clearTimeout(trackingSaveTimeout);
+  trackingSaveTimeout = setTimeout(() => {
+    save(order);
+  }, 600);
 }
 
 async function saveExpenses(target = null) {
@@ -462,11 +560,20 @@ function syncSuperfreteConfig() {
   saveSuperfreteConfig({
     token: cfg.token || '',
     sandbox: cfg.sandbox || false,
-    cepOrigem: cfg.cepOrigem || '',
-    pesoDefault: cfg.pesoDefault || 0.03,
+    cepOrigem: cfg.cepOrigem || '08140060',
+    pesoDefault: cfg.pesoDefault || 0.3,
     alturaDefault: cfg.alturaDefault || 2,
     larguraDefault: cfg.larguraDefault || 12,
-    comprimentoDefault: cfg.comprimentoDefault || 18
+    comprimentoDefault: cfg.comprimentoDefault || 18,
+    remetenteNome: cfg.remetenteNome || 'Karoline Gonçalves Garcia',
+    remetenteTelefone: cfg.remetenteTelefone || '11940878269',
+    remetenteEmail: cfg.remetenteEmail || 'contato@meupetemarte.com.br',
+    remetenteEndereco: cfg.remetenteEndereco || 'Rua Antônio João de Medeiros',
+    remetenteNumero: cfg.remetenteNumero || '700A',
+    remetenteComplemento: cfg.remetenteComplemento || 'Casa 83',
+    remetenteBairro: cfg.remetenteBairro || 'Itaim Paulista',
+    remetenteCidade: cfg.remetenteCidade || 'São Paulo',
+    remetenteUF: cfg.remetenteUF || 'SP'
   });
 }
 
@@ -476,6 +583,323 @@ function saveSuperfreteSettings() {
   saveSettings('superfrete_config', state.superfreteConfig);
   runAutoBackup();
 }
+
+function syncUazapiConfig() {
+  const cfg = state.uazapiConfig || {};
+  saveUazapiConfig({
+    baseUrl: cfg.baseUrl || '',
+    token: cfg.token || '',
+    enabled: cfg.enabled !== false,
+    delayMs: Number(cfg.delayMs || 1200)
+  });
+}
+
+function saveUazapiSettings() {
+  localStorage.setItem('mpa:uazapi_config', JSON.stringify(state.uazapiConfig));
+  syncUazapiConfig();
+  saveSettings('uazapi_config', state.uazapiConfig);
+  runAutoBackup();
+}
+
+async function testUazapiSettingsConnection() {
+  const feedback = document.getElementById('uazapiTestFeedback');
+  const cfg = state.uazapiConfig || {};
+
+  if (!cfg.baseUrl || !cfg.token) {
+    if (feedback) {
+      feedback.textContent = '❌ Informe a URL e o Token da UAZAPI antes de testar.';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  if (feedback) {
+    feedback.textContent = '⏳ Testando conexão com a UAZAPI...';
+    feedback.className = 'cep-feedback';
+  }
+
+  try {
+    syncUazapiConfig();
+    const res = await testUazapiConnection(cfg);
+    if (feedback) {
+      feedback.textContent = `✅ ${res.message || 'Conectado à UAZAPI com sucesso!'}`;
+      feedback.className = 'cep-feedback success';
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `❌ ${err.message || 'Falha ao conectar na UAZAPI.'}`;
+      feedback.className = 'cep-feedback error';
+    }
+  }
+}
+
+function populateUazapiTemplateSelect(selectedId = null) {
+  const selectEl = document.getElementById('uazapiTemplateSelect');
+  if (!selectEl) return;
+
+  const customList = state.uazapiCustomTemplates || [];
+  const defaultTemplates = Object.values(UAZAPI_TEMPLATES);
+
+  let html = '';
+  if (customList.length > 0) {
+    html += `<optgroup label="⭐ Meus Modelos Personalizados">`;
+    customList.forEach(t => {
+      html += `<option value="${t.id}">${escapeHtml(t.label)}</option>`;
+    });
+    html += `</optgroup>`;
+  }
+
+  html += `<optgroup label="📋 Modelos Padrão">`;
+  defaultTemplates.forEach(t => {
+    html += `<option value="${t.id}">${escapeHtml(t.label)}</option>`;
+  });
+  html += `</optgroup>`;
+  html += `<option value="custom">✏️ Mensagem Personalizada (Em branco)</option>`;
+
+  selectEl.innerHTML = html;
+  if (selectedId) {
+    selectEl.value = selectedId;
+  }
+}
+
+let currentUazapiOrder = null;
+
+function openUazapiModal(orderId, defaultTemplate = 'auto') {
+  const order = state.orders.find(o => o.id === orderId);
+  if (!order) {
+    alert('Pedido não encontrado.');
+    return;
+  }
+
+  currentUazapiOrder = order;
+  const modal = document.getElementById('uazapiModal');
+  if (!modal) return;
+
+  const nameEl = document.getElementById('uazapiRecipientName');
+  const petEl = document.getElementById('uazapiRecipientPet');
+  const phoneEl = document.getElementById('uazapiRecipientPhone');
+  const subtitleEl = document.getElementById('uazapiModalSubtitle');
+  const feedbackEl = document.getElementById('uazapiSendFeedback');
+  const saveRow = document.getElementById('saveTemplateRow');
+
+  if (saveRow) saveRow.style.display = 'none';
+
+  if (nameEl) nameEl.textContent = `${order.client || 'Cliente'} (${order.id})`;
+  if (petEl) petEl.textContent = `🐾 Pet: ${order.petName || 'Não especificado'} • Produto: ${order.product || 'Arte'}`;
+  
+  const formattedPhone = formatWhatsAppNumber(order.whatsapp);
+  if (phoneEl) {
+    phoneEl.textContent = order.whatsapp ? (formattedPhone.startsWith('55') ? `+${formattedPhone}` : order.whatsapp) : 'Sem WhatsApp cadastrado';
+    phoneEl.className = order.whatsapp ? 'status-pill status-finalizado' : 'status-pill status-cancelado';
+  }
+
+  if (subtitleEl) {
+    subtitleEl.textContent = `Pedido ${order.id} • Status: ${getOrderWorkflowStatus(order)}`;
+  }
+
+  if (feedbackEl) {
+    feedbackEl.textContent = '';
+    feedbackEl.className = 'cep-feedback';
+  }
+
+  // Seleção automática inteligente baseada no status ou dados do pedido
+  let selectedTpl = defaultTemplate;
+  const currentStatus = getOrderWorkflowStatus(order);
+  if (defaultTemplate === 'auto' || !defaultTemplate) {
+    if (order.tracking) selectedTpl = 'rastreio';
+    else if (currentStatus === 'Novo Pedido') selectedTpl = 'boas_vindas';
+    else if (['Em Producao', 'Criação do 3D', 'Imprimindo 3D', 'Pintura', 'Fila Impressão'].includes(currentStatus)) selectedTpl = 'em_producao';
+    else if (currentStatus === 'Pronto para Foto') selectedTpl = 'previa_arte';
+    else if (currentStatus === 'Entregue') selectedTpl = 'pos_venda';
+    else selectedTpl = 'boas_vindas';
+  }
+
+  populateUazapiTemplateSelect(selectedTpl);
+
+  updateUazapiMessageDraft(true);
+  modal.showModal();
+}
+
+function updateUazapiMessageDraft(overwriteText = true) {
+  if (!currentUazapiOrder) return;
+  const selectEl = document.getElementById('uazapiTemplateSelect');
+  const textEl = document.getElementById('uazapiMessageText');
+  const linkEl = document.getElementById('uazapiFallbackWaLink');
+
+  const tplKey = selectEl ? selectEl.value : 'rastreio';
+  let messageContent = '';
+
+  const customFound = (state.uazapiCustomTemplates || []).find(t => t.id === tplKey);
+
+  if (tplKey === 'custom') {
+    messageContent = '';
+  } else if (customFound) {
+    messageContent = renderTemplate(customFound.template, currentUazapiOrder);
+  } else if (UAZAPI_TEMPLATES[tplKey]) {
+    messageContent = renderTemplate(UAZAPI_TEMPLATES[tplKey].template, currentUazapiOrder);
+  }
+
+  if (overwriteText && textEl) {
+    textEl.value = messageContent;
+  }
+
+  // Atualiza link direto para WhatsApp Web como opção alternativa
+  if (linkEl) {
+    const currentText = textEl ? textEl.value : messageContent;
+    const phone = formatWhatsAppNumber(currentUazapiOrder.whatsapp);
+    if (phone) {
+      linkEl.href = `https://wa.me/${phone}?text=${encodeURIComponent(currentText)}`;
+      linkEl.style.display = 'inline-flex';
+    } else {
+      linkEl.style.display = 'none';
+    }
+  }
+}
+
+function handleSaveCurrentAsTemplate() {
+  const nameInput = document.getElementById('newTemplateName');
+  const textEl = document.getElementById('uazapiMessageText');
+  const feedback = document.getElementById('uazapiSendFeedback');
+  const row = document.getElementById('saveTemplateRow');
+
+  const name = nameInput ? nameInput.value.trim() : '';
+  const text = textEl ? textEl.value.trim() : '';
+
+  if (!name) {
+    alert('Por favor, digite um nome para o modelo.');
+    nameInput?.focus();
+    return;
+  }
+  if (!text) {
+    alert('A mensagem não pode estar vazia.');
+    textEl?.focus();
+    return;
+  }
+
+  const newId = 'custom_' + Date.now();
+  const newTpl = {
+    id: newId,
+    label: name,
+    template: text
+  };
+
+  state.uazapiCustomTemplates = state.uazapiCustomTemplates || [];
+  state.uazapiCustomTemplates.push(newTpl);
+  saveCustomTemplates(state.uazapiCustomTemplates);
+  saveSettings('uazapi_custom_templates', state.uazapiCustomTemplates);
+
+  populateUazapiTemplateSelect(newId);
+  if (row) row.style.display = 'none';
+  if (nameInput) nameInput.value = '';
+
+  if (feedback) {
+    feedback.textContent = `✅ Modelo "${name}" salvo com sucesso!`;
+    feedback.className = 'cep-feedback success';
+    setTimeout(() => {
+      if (feedback.textContent.includes('salvo com sucesso')) feedback.textContent = '';
+    }, 3000);
+  }
+
+  if (state.currentView === 'whatsapp') {
+    renderWhatsappView();
+  }
+}
+
+function deleteCustomTemplate(templateId) {
+  if (!confirm('Deseja realmente excluir este modelo de mensagem?')) return;
+  state.uazapiCustomTemplates = (state.uazapiCustomTemplates || []).filter(t => t.id !== templateId);
+  saveCustomTemplates(state.uazapiCustomTemplates);
+  saveSettings('uazapi_custom_templates', state.uazapiCustomTemplates);
+  populateUazapiTemplateSelect();
+  if (state.currentView === 'whatsapp') {
+    renderWhatsappView();
+  }
+}
+
+async function handleSendUazapiMessage() {
+  if (!currentUazapiOrder) return;
+  const btn = document.getElementById('btnSendUazapi');
+  const feedback = document.getElementById('uazapiSendFeedback');
+  const textEl = document.getElementById('uazapiMessageText');
+
+  const text = textEl ? textEl.value.trim() : '';
+  if (!text) {
+    if (feedback) {
+      feedback.textContent = '❌ A mensagem não pode estar vazia.';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  const phone = currentUazapiOrder.whatsapp;
+  if (!phone) {
+    if (feedback) {
+      feedback.textContent = '❌ Este pedido não possui telefone/WhatsApp cadastrado.';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  const cfg = state.uazapiConfig || {};
+  if (!cfg.enabled || !cfg.baseUrl || !cfg.token) {
+    if (feedback) {
+      feedback.textContent = '❌ UAZAPI desativada ou não configurada. Configure em Despesas > WhatsApp (UAZAPI).';
+      feedback.className = 'cep-feedback error';
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Enviando...';
+  }
+  if (feedback) {
+    feedback.textContent = 'Enviando mensagem via WhatsApp...';
+    feedback.className = 'cep-feedback';
+  }
+
+  try {
+    syncUazapiConfig();
+    await sendWhatsAppText({
+      number: phone,
+      text: text
+    });
+
+    if (feedback) {
+      feedback.textContent = '✅ Mensagem enviada com sucesso pelo WhatsApp!';
+      feedback.className = 'cep-feedback success';
+    }
+
+    // Registrar no histórico do pedido
+    if (currentUazapiOrder.history) {
+      const nowStr = new Date().toLocaleString('pt-BR');
+      const previewText = text.length > 50 ? text.slice(0, 50) + '...' : text;
+      currentUazapiOrder.history.unshift({
+        at: nowStr,
+        text: `WhatsApp (UAZAPI) enviado: "${previewText}"`
+      });
+      save(currentUazapiOrder);
+    }
+
+    setTimeout(() => {
+      const modal = document.getElementById('uazapiModal');
+      if (modal && modal.open) modal.close();
+      render();
+    }, 1800);
+
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `❌ ${err.message || 'Falha ao enviar mensagem via UAZAPI.'}`;
+      feedback.className = 'cep-feedback error';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🚀 Enviar via UAZAPI</span>';
+    }
+  }
+}
+
 
 async function handleCalcFrete() {
   const cepInput = document.getElementById('orderCepInput');
@@ -514,10 +938,25 @@ async function handleCalcFrete() {
     const quotes = await calcularFrete({
       cepOrigem: cfg.cepOrigem || '08140060',
       cepDestino: cep,
-      peso: cfg.pesoDefault || 0.03,
+      peso: 0.3, // Padrão sempre 300g (0.3 kg)
       altura: cfg.alturaDefault || 2,
       largura: cfg.larguraDefault || 12,
       comprimento: cfg.comprimentoDefault || 18
+    });
+
+    const isLoggi = (q) => {
+      const nameUpper = String(q.name || '').toUpperCase();
+      const compUpper = String(q.company || '').toUpperCase();
+      return nameUpper.includes('LOGGI') || compUpper.includes('LOGGI') || q.id === 31 || q.id === 33;
+    };
+
+    // Ordenar priorizando a LOGGI
+    quotes.sort((a, b) => {
+      const aLoggi = isLoggi(a);
+      const bLoggi = isLoggi(b);
+      if (aLoggi && !bLoggi) return -1;
+      if (!aLoggi && bLoggi) return 1;
+      return (Number(a.price) || 0) - (Number(b.price) || 0);
     });
 
     state.superfreteQuotes = quotes;
@@ -547,14 +986,24 @@ async function handleCalcFrete() {
           : q.name.toLowerCase().includes('pac') ? 'badge-pac'
           : q.name.toLowerCase().includes('loggi') ? 'badge-loggi'
           : 'badge-mini';
+        const isLoggiQuote = isLoggi(q);
         return `
           <button type="button" class="superfrete-quote-card" data-quote-index="${idx}" title="Selecionar ${q.name}">
-            <span class="quote-badge ${badgeClass}">${q.name}</span>
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-bottom:4px;">
+              <span class="quote-badge ${badgeClass}">${q.name}</span>
+              ${isLoggiQuote ? '<span class="quote-badge-preferential" style="font-size:0.65rem;">⭐ Preferencial</span>' : ''}
+            </div>
             <span class="quote-price">R$ ${Number(q.price).toFixed(2).replace('.', ',')}</span>
             <span class="quote-deadline">📅 ${prazo}</span>
             ${q.discount ? `<span class="quote-discount">💰 Desconto: R$ ${Number(q.discount).toFixed(2).replace('.', ',')}</span>` : ''}
           </button>`;
       }).join('');
+    }
+
+    // Selecionar LOGGI automaticamente se disponível
+    const loggiIdx = quotes.findIndex(isLoggi);
+    if (loggiIdx !== -1) {
+      selectSuperfreteQuote(loggiIdx);
     }
   } catch (err) {
     if (spinner) spinner.style.display = 'none';
@@ -633,7 +1082,56 @@ async function testSuperfreteConnection() {
 
 let currentLabelModalOrder = null;
 let currentLabelQuotes = [];
-let selectedLabelServiceId = 1; // 1=PAC, 2=SEDEX, 17=Mini, 31=LOGGI
+let selectedLabelServiceId = 31; // 31/33=LOGGI (preferencial), 1=PAC, 2=SEDEX, 17=Mini
+
+function getSuperfreteSenderInfo() {
+  const cfg = state.superfreteConfig || {};
+  const nome = (cfg.remetenteNome && cfg.remetenteNome !== 'Meu Pet em Arte') ? cfg.remetenteNome : 'Karoline Gonçalves Garcia';
+  const endereco = (cfg.remetenteEndereco && cfg.remetenteEndereco !== 'Rua Principal') ? cfg.remetenteEndereco : 'Rua Antônio João de Medeiros';
+  const numero = (cfg.remetenteNumero && cfg.remetenteNumero !== '100') ? cfg.remetenteNumero : '700A';
+  const complemento = cfg.remetenteComplemento || 'Casa 83';
+  const bairro = (cfg.remetenteBairro && cfg.remetenteBairro !== 'Centro') ? cfg.remetenteBairro : 'Itaim Paulista';
+  const cidade = cfg.remetenteCidade || 'São Paulo';
+  const uf = cfg.remetenteUF || 'SP';
+  const cep = cfg.cepOrigem || '08140060';
+  const telefone = (cfg.remetenteTelefone && cfg.remetenteTelefone !== '11999999999') ? cfg.remetenteTelefone : '11940878269';
+  const email = cfg.remetenteEmail || 'contato@meupetemarte.com.br';
+
+  const enderecoLinha = `${endereco}, ${numero}${complemento ? ' - ' + complemento : ''} • ${bairro}, ${cidade}/${uf} - CEP: ${cep}`;
+
+  return {
+    nome,
+    endereco,
+    numero,
+    complemento,
+    bairro,
+    cidade,
+    uf,
+    cep,
+    telefone,
+    email,
+    enderecoLinha,
+    formatado: `${nome} — ${enderecoLinha} • Tel: ${telefone}`
+  };
+}
+
+function updateLabelConfirmationSummary() {
+  const carrierSpan = document.getElementById('lblSummaryCarrierName');
+  const weightSpan = document.getElementById('lblSummaryWeight');
+  const selectedQuote = currentLabelQuotes.find(q => q.id === selectedLabelServiceId);
+  const weightVal = Number(document.getElementById('lblModalWeight')?.value) || 0.3;
+
+  if (carrierSpan) {
+    const isLoggi = (name = '', comp = '') => name.toUpperCase().includes('LOGGI') || comp.toUpperCase().includes('LOGGI');
+    const name = selectedQuote ? selectedQuote.name : (selectedLabelServiceId === 31 || selectedLabelServiceId === 33 ? 'LOGGI' : (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC'));
+    const priceStr = selectedQuote ? ` • R$ ${Number(selectedQuote.price).toFixed(2).replace('.', ',')}` : '';
+    const isLoggiSelected = selectedQuote ? isLoggi(selectedQuote.name, selectedQuote.company) : (selectedLabelServiceId === 31 || selectedLabelServiceId === 33);
+    carrierSpan.innerHTML = `${escapeHtml(name)}${priceStr} ${isLoggiSelected ? '<span class="quote-badge-preferential" style="margin-left:4px;">⭐ Preferencial</span>' : ''}`;
+  }
+  if (weightSpan) {
+    weightSpan.textContent = `${weightVal} kg (${Math.round(weightVal * 1000)}g)`;
+  }
+}
 
 async function openLabelModal(orderId) {
   const order = state.orders.find(o => o.id === orderId);
@@ -661,18 +1159,15 @@ async function openLabelModal(orderId) {
   const baseHeight = Number(cfg.alturaDefault) || 2;
   const baseWidth = Number(cfg.larguraDefault) || 12;
   const baseLength = Number(cfg.comprimentoDefault) || 18;
-  const baseWeight = Number(cfg.pesoDefault) || 0.03;
 
-  // Sugestão automática para mais de 1 item
+  // REGRA: Sempre peso padrão de 300 gramas (0.3 kg), mesmo para mais de 1 unidade
+  const initWeight = 0.3;
+
+  // Sugestão de altura para mais de 1 item (peso mantido fixo em 300g)
   const initHeight = qty > 1 ? Math.min(baseHeight + (qty - 1) * 1.5, 60) : baseHeight;
-  const initWeight = qty > 1 ? +(baseWeight * qty).toFixed(2) : baseWeight;
 
-  // Pré-selecionar transportadora de acordo com o pedido, se houver
-  const methodUpper = String(order.shippingMethod || '').toUpperCase();
-  if (methodUpper.includes('SEDEX')) selectedLabelServiceId = 2;
-  else if (methodUpper.includes('MINI')) selectedLabelServiceId = 17;
-  else if (methodUpper.includes('LOGGI')) selectedLabelServiceId = 31;
-  else selectedLabelServiceId = 1;
+  // REGRA: Preferência sempre para a transportadora LOGGI (31 ou 33)
+  selectedLabelServiceId = 31;
 
   const modal = document.getElementById('labelModal');
   if (!modal) return;
@@ -689,6 +1184,7 @@ function renderLabelModalUI(order, height, width, length, weight, qty) {
   if (!modal) return;
 
   const cleanDoc = String(order.cpf || '').trim();
+  const sender = getSuperfreteSenderInfo();
 
   modal.innerHTML = `
     <article class="label-modal-card">
@@ -701,6 +1197,17 @@ function renderLabelModalUI(order, height, width, length, weight, qty) {
       </div>
 
       <div class="label-modal-body">
+        <!-- Remetente e Origem -->
+        <div style="background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px 14px; font-size:0.83rem; line-height:1.4;">
+          <div style="font-weight:700; color:var(--ink); margin-bottom:2px; display:flex; align-items:center; gap:6px;">
+            <span>🏠 Remetente (Origem):</span>
+            <span style="font-weight:600; color:var(--accent);">${escapeHtml(sender.nome)}</span>
+          </div>
+          <div style="color:var(--muted);">
+            📍 ${escapeHtml(sender.enderecoLinha)} • Tel: ${escapeHtml(sender.telefone)}
+          </div>
+        </div>
+
         <!-- Destinatário e CPF -->
         <div class="label-dest-box">
           <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
@@ -720,11 +1227,11 @@ function renderLabelModalUI(order, height, width, length, weight, qty) {
         <div class="package-config-box">
           ${qty > 1 ? `
             <div class="package-qty-badge">
-              📦 <b>Pedido com ${qty} itens</b> • O tamanho e peso do pacote foram sugeridos proporcionalmente. Ajuste se necessário:
+              📦 <b>Pedido com ${qty} itens</b> • Dimensões sugeridas e peso mantido no padrão de 300g (0.3 kg). Ajuste se necessário:
             </div>
           ` : `
             <div class="package-qty-badge">
-              📦 <b>Tamanho do Pacote (1 item)</b> • Dimensões e peso para cálculo da transportadora:
+              📦 <b>Tamanho do Pacote (1 item)</b> • Dimensões e peso padrão (300g / 0.3 kg) para cálculo da transportadora:
             </div>
           `}
 
@@ -742,7 +1249,7 @@ function renderLabelModalUI(order, height, width, length, weight, qty) {
               <input type="number" id="lblModalLength" value="${length}" step="0.5" min="13" max="100" />
             </div>
             <div class="dim-field">
-              <label for="lblModalWeight">Peso (kg)</label>
+              <label for="lblModalWeight">Peso (kg) <span style="font-weight:normal;color:var(--muted);">(300g)</span></label>
               <input type="number" id="lblModalWeight" value="${weight}" step="0.01" min="0.01" max="30" />
             </div>
           </div>
@@ -757,11 +1264,49 @@ function renderLabelModalUI(order, height, width, length, weight, qty) {
         <!-- Seleção de Transportadora -->
         <div>
           <h4 style="margin:0 0 8px 0;font-size:0.95rem;display:flex;align-items:center;gap:6px;">
-            <span>🚚 Escolha a Transportadora / Serviço:</span>
+            <span>🚚 Escolha a Transportadora / Serviço (Preferência: LOGGI):</span>
           </h4>
           <div id="lblModalQuotesContainer">
             <div style="padding:20px;text-align:center;color:var(--muted);font-size:0.9rem;">
               ⏳ Consultando opções e prazos na SuperFrete em tempo real...
+            </div>
+          </div>
+        </div>
+
+        <!-- Confirmação dos Dados do Envio com Endereço de Remetente -->
+        <div class="label-confirmation-box" id="lblModalConfirmationSection">
+          <div style="font-weight:700; color:var(--ink); font-size:0.9rem; display:flex; align-items:center; gap:6px;">
+            <span>📋 Confirmação dos Dados do Envio</span>
+          </div>
+
+          <div class="label-confirm-card">
+            <div style="font-weight:700; color:#0f766e; font-size:0.8rem; margin-bottom:2px; display:flex; align-items:center; gap:4px;">
+              <span>🏠 Endereço do Remetente (Origem):</span>
+            </div>
+            <div style="font-weight:700; color:var(--ink); font-size:0.85rem;">${escapeHtml(sender.nome)}</div>
+            <div style="color:var(--muted); font-size:0.82rem; margin-top:1px;">
+              📍 ${escapeHtml(sender.enderecoLinha)} • Tel: ${escapeHtml(sender.telefone)}
+            </div>
+          </div>
+
+          <div class="label-confirm-card">
+            <div style="font-weight:700; color:#0369a1; font-size:0.8rem; margin-bottom:2px; display:flex; align-items:center; gap:4px;">
+              <span>📍 Endereço do Destinatário:</span>
+            </div>
+            <div style="font-weight:700; color:var(--ink); font-size:0.85rem;">
+              ${escapeHtml(order.client)} ${order.whatsapp ? `• (${escapeHtml(order.whatsapp)})` : ''}
+            </div>
+            <div style="color:var(--muted); font-size:0.82rem; margin-top:1px;">
+              📍 ${escapeHtml(order.address)}, ${escapeHtml(order.number)}${order.complement ? ' - ' + escapeHtml(order.complement) : ''} • ${escapeHtml(order.neighborhood || '')}, ${escapeHtml(order.city || '')}/${escapeHtml(order.state || 'SP')} - CEP: ${escapeHtml(order.cep || '')}
+            </div>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; font-size:0.82rem; padding:2px 4px;">
+            <div>
+              🚚 <b>Transportadora:</b> <span id="lblSummaryCarrierName" style="color:var(--accent); font-weight:700;">LOGGI</span>
+            </div>
+            <div>
+              ⚖️ <b>Peso:</b> <span id="lblSummaryWeight" style="font-weight:700;">${weight} kg (${Math.round(weight * 1000)}g)</span>
             </div>
           </div>
         </div>
@@ -793,7 +1338,7 @@ async function fetchLabelQuotes() {
   const height = Number(document.getElementById('lblModalHeight')?.value) || 2;
   const width = Number(document.getElementById('lblModalWidth')?.value) || 12;
   const length = Number(document.getElementById('lblModalLength')?.value) || 18;
-  const weight = Number(document.getElementById('lblModalWeight')?.value) || 0.03;
+  const weight = Number(document.getElementById('lblModalWeight')?.value) || 0.3;
 
   try {
     syncSuperfreteConfig();
@@ -817,13 +1362,33 @@ async function fetchLabelQuotes() {
       return;
     }
 
-    // Se o serviço previamente selecionado não estiver na lista de cotações, seleciona o primeiro disponível
-    if (!currentLabelQuotes.some(q => q.id === selectedLabelServiceId)) {
+    // REGRA: Dar sempre preferência para a transportadora LOGGI
+    const isLoggi = (q) => {
+      const nameUpper = String(q.name || '').toUpperCase();
+      const compUpper = String(q.company || '').toUpperCase();
+      return nameUpper.includes('LOGGI') || compUpper.includes('LOGGI') || q.id === 31 || q.id === 33;
+    };
+
+    // Ordena colocando a transportadora LOGGI sempre em primeiro lugar (preferencial)
+    currentLabelQuotes.sort((a, b) => {
+      const aLoggi = isLoggi(a);
+      const bLoggi = isLoggi(b);
+      if (aLoggi && !bLoggi) return -1;
+      if (!aLoggi && bLoggi) return 1;
+      return (Number(a.price) || 0) - (Number(b.price) || 0);
+    });
+
+    // Se houver cotação da LOGGI, seleciona-a preferencialmente
+    const loggiQuote = currentLabelQuotes.find(isLoggi);
+    if (loggiQuote) {
+      selectedLabelServiceId = loggiQuote.id;
+    } else if (!currentLabelQuotes.some(q => q.id === selectedLabelServiceId)) {
       selectedLabelServiceId = currentLabelQuotes[0].id;
     }
 
     renderCarrierQuotesCards();
     updateSubmitButtonText();
+    updateLabelConfirmationSummary();
   } catch (err) {
     console.error('[SuperFrete Modal] Erro ao cotar:', err);
     container.innerHTML = `
@@ -847,14 +1412,24 @@ function renderCarrierQuotesCards() {
     return "badge-pac";
   };
 
+  const isLoggi = (q) => {
+    const nameUpper = String(q.name || '').toUpperCase();
+    const compUpper = String(q.company || '').toUpperCase();
+    return nameUpper.includes('LOGGI') || compUpper.includes('LOGGI') || q.id === 31 || q.id === 33;
+  };
+
   container.innerHTML = `
     <div class="carrier-options-grid">
       ${currentLabelQuotes.map(q => {
         const isSelected = q.id === selectedLabelServiceId;
         const days = q.deliveryMax || q.deliveryMin || 0;
+        const isLoggiService = isLoggi(q);
         return `
           <button type="button" class="carrier-quote-card ${isSelected ? 'selected' : ''}" data-carrier-id="${q.id}">
-            <span class="quote-badge ${badgeClass(q.name)}">${escapeHtml(q.name)}</span>
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-bottom:2px;">
+              <span class="quote-badge ${badgeClass(q.name)}">${escapeHtml(q.name)}</span>
+              ${isLoggiService ? `<span class="quote-badge-preferential">⭐ Preferencial</span>` : ''}
+            </div>
             <span style="font-size:0.75rem;color:var(--muted);margin-top:3px;">${escapeHtml(q.company || 'Transportadora')}</span>
             <span class="quote-price" style="font-size:1.05rem;margin:4px 0 2px 0;">R$ ${Number(q.price).toFixed(2).replace('.', ',')}</span>
             <span class="quote-deadline" style="font-size:0.75rem;">${days ? `Até ${days} ${days === 1 ? 'dia útil' : 'dias úteis'}` : 'Prazo sob consulta'}</span>
@@ -869,9 +1444,11 @@ function updateSubmitButtonText() {
   const btn = document.getElementById('btnSubmitGenerateLabel');
   if (!btn) return;
   const selectedQuote = currentLabelQuotes.find(q => q.id === selectedLabelServiceId);
-  const name = selectedQuote ? selectedQuote.name : (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC');
+  const name = selectedQuote ? selectedQuote.name : (selectedLabelServiceId === 31 || selectedLabelServiceId === 33 ? 'LOGGI' : (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC'));
   const price = selectedQuote ? ` • R$ ${Number(selectedQuote.price).toFixed(2).replace('.', ',')}` : '';
   btn.textContent = `🏷️ Emitir Etiqueta (${name}${price})`;
+
+  updateLabelConfirmationSummary();
 }
 
 async function confirmGenerateLabel() {
@@ -898,7 +1475,26 @@ async function confirmGenerateLabel() {
   const height = Number(document.getElementById('lblModalHeight')?.value) || 2;
   const width = Number(document.getElementById('lblModalWidth')?.value) || 12;
   const length = Number(document.getElementById('lblModalLength')?.value) || 18;
-  const weight = Number(document.getElementById('lblModalWeight')?.value) || 0.03;
+  const weight = Number(document.getElementById('lblModalWeight')?.value) || 0.3;
+
+  const selectedQuote = currentLabelQuotes.find(q => q.id === selectedLabelServiceId);
+  const serviceName = selectedQuote?.name || (selectedLabelServiceId === 31 || selectedLabelServiceId === 33 ? 'LOGGI' : (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC'));
+
+  const sender = getSuperfreteSenderInfo();
+  const destAddress = `${order.address}, ${order.number || 'S/N'}${order.complement ? ' - ' + order.complement : ''} • ${order.neighborhood || ''}, ${order.city || ''}/${order.state || 'SP'} • CEP: ${order.cep}`;
+
+  // REGRA: Confirmação com endereço de remetente visível
+  const confirmMsg = 
+    `Confirma a emissão da etiqueta na SuperFrete?\n\n` +
+    `🚚 Transportadora: ${serviceName}${selectedQuote ? ` • R$ ${Number(selectedQuote.price).toFixed(2).replace('.', ',')}` : ''}\n` +
+    `⚖️ Peso: ${weight} kg (${Math.round(weight * 1000)}g)\n\n` +
+    `🏠 Endereço do Remetente (Origem):\n${sender.nome}\n${sender.enderecoLinha} • Tel: ${sender.telefone}\n\n` +
+    `📍 Destinatário:\n${order.client}\n${destAddress}\nCPF: ${cleanDoc}\n\n` +
+    `Deseja prosseguir com a emissão? O valor será debitado do saldo da sua carteira SuperFrete.`;
+
+  if (!window.confirm(confirmMsg)) {
+    return;
+  }
 
   if (feedback) feedback.style.display = 'none';
   if (submitBtn) {
@@ -909,20 +1505,18 @@ async function confirmGenerateLabel() {
   try {
     syncSuperfreteConfig();
 
-    const selectedQuote = currentLabelQuotes.find(q => q.id === selectedLabelServiceId);
-    const serviceName = selectedQuote?.name || (selectedLabelServiceId === 2 ? 'SEDEX' : 'PAC');
-
     const cartResult = await criarFrete({
       from: {
-        name: cfg.remetenteNome || 'Meu Pet em Arte',
-        phone: String(cfg.remetenteTelefone || '11999999999').replace(/\D/g, ''),
-        email: cfg.remetenteEmail || 'contato@meupetemarte.com.br',
-        postalCode: cfg.cepOrigem || '08140060',
-        address: cfg.remetenteEndereco || 'Rua Principal',
-        number: cfg.remetenteNumero || '100',
-        district: cfg.remetenteBairro || 'Centro',
-        city: cfg.remetenteCidade || 'São Paulo',
-        stateAbbr: cfg.remetenteUF || 'SP',
+        name: sender.nome,
+        phone: String(sender.telefone).replace(/\D/g, ''),
+        email: sender.email,
+        postalCode: String(sender.cep).replace(/\D/g, ''),
+        address: sender.endereco,
+        number: sender.numero,
+        complement: sender.complemento,
+        district: sender.bairro,
+        city: sender.cidade,
+        stateAbbr: sender.uf,
         countryId: 'BR'
       },
       to: {
@@ -958,7 +1552,7 @@ async function confirmGenerateLabel() {
     order.superfreteOrderId = String(superfreteOrderId);
     order.superfreteStatus = 'Carrinho criado';
     order.shippingMethod = serviceName;
-    save();
+    save(order);
 
     // Finalizar no checkout da SuperFrete
     try {
@@ -992,12 +1586,19 @@ async function confirmGenerateLabel() {
       text: `Etiqueta SuperFrete (${serviceName}) gerada (ID: ${order.superfreteOrderId})`
     });
 
-    save();
+    save(order);
     document.getElementById('labelModal')?.close();
     render();
     openDetails(order.id);
 
-    alert(`✅ Etiqueta SuperFrete (${serviceName}) criada com sucesso!\nID: ${order.superfreteOrderId}${order.superfreteLabelUrl ? '\n\nO PDF da etiqueta já está disponível nos detalhes do pedido.' : ''}`);
+    alert(
+      `✅ Etiqueta SuperFrete (${serviceName}) criada com sucesso!\n\n` +
+      `ID: ${order.superfreteOrderId}\n` +
+      `Rastreio: ${order.tracking || 'Pendente de postagem'}\n\n` +
+      `🏠 Endereço do Remetente:\n${sender.nome} • ${sender.enderecoLinha}\n\n` +
+      `📍 Destinatário:\n${order.client} • ${destAddress}\n\n` +
+      `${order.superfreteLabelUrl ? '📄 O PDF da etiqueta já está disponível para impressão nos detalhes do pedido.' : ''}`
+    );
   } catch (err) {
     console.error('[SuperFrete] Erro ao emitir etiqueta:', err);
     if (feedback) {
@@ -1386,6 +1987,7 @@ const viewRenderers = {
   production: () => renderProduction(),
   labels: () => renderLabels(),
   shipping: () => renderShipping(),
+  whatsapp: () => renderWhatsappView(),
   products: () => renderProducts(),
   expenses: () => renderExpenses(),
   finance: () => renderFinance(),
@@ -1444,6 +2046,220 @@ function render() {
   Object.entries(viewRenderers).forEach(([view, fn]) => {
     try { fn(); } catch (e) { console.error(`render ${view} error`, e); }
   });
+}
+
+function renderWhatsappView() {
+  const container = document.getElementById("whatsappView");
+  if (!container) return;
+
+  const cfg = state.uazapiConfig || {};
+  const isEnabled = cfg.enabled !== false && !!cfg.baseUrl && !!cfg.token;
+
+  container.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <h2 style="margin: 0; font-size: 1.3rem;">Integração WhatsApp (UAZAPI) 💬</h2>
+        <span class="muted" style="font-size: 0.85rem;">Conecte sua instância da UAZAPI para envio de mensagens automáticas e avisos de pedidos.</span>
+      </div>
+      <div>
+        <span class="status-pill ${isEnabled ? 'status-finalizado' : 'status-cancelado'}" style="font-size:0.85rem; font-weight:800; padding:6px 14px;">
+          ${isEnabled ? '🟢 UAZAPI CONECTADA E ATIVA' : '🔴 DESATIVADA OU NÃO CONFIGURADA'}
+        </span>
+      </div>
+    </div>
+
+    <div class="grid content-grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px;">
+      <!-- Painel de Configurações -->
+      <div class="panel">
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center;">
+          <h3>⚙️ Dados da Conexão</h3>
+        </div>
+        <p class="muted" style="margin-top:4px;">Insira a URL e o Token fornecidos no painel da sua instância UAZAPI.</p>
+
+        <form id="uazapiConfigForm" class="panel form-grid" style="margin-top:14px; background:var(--surface);">
+          <label class="wide">URL Base da Instância UAZAPI
+            <input name="baseUrl" type="url" placeholder="https://sua-instancia.uazapi.com" value="${escapeHtml(cfg.baseUrl || '')}" required />
+            <small class="muted" style="margin-top:3px; font-size:0.8rem;">Exemplo: https://api.uazapi.com ou subdomínio do seu servidor</small>
+          </label>
+          <label class="wide">Token da Instância (Instance Token)
+            <input name="token" type="password" placeholder="Token ou chave da sua instância" value="${escapeHtml(cfg.token || '')}" required />
+          </label>
+          <label class="wide">Delay de Digitação (ms)
+            <input name="delayMs" type="number" step="100" min="0" max="10000" value="${cfg.delayMs || 1200}" />
+            <small class="muted" style="margin-top:3px; font-size:0.8rem;">Simula status de "digitando..." antes do envio (padrão: 1200ms)</small>
+          </label>
+          <div class="wide" style="margin-top:4px;">
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" name="enabled" ${cfg.enabled !== false ? 'checked' : ''} />
+              <b>Ativar envio via UAZAPI no sistema</b>
+            </label>
+          </div>
+          <div class="wide quick-actions wrap" style="margin-top:12px; align-items:center;">
+            <button class="primary-button" type="submit">Salvar Configurações</button>
+            <button class="secondary-button" type="button" id="btnTestUazapi">Testar Conexão</button>
+            <span id="uazapiTestFeedback" class="cep-feedback"></span>
+          </div>
+        </form>
+      </div>
+
+      <!-- Testador Rápido de Disparo -->
+      <div class="panel">
+        <h3>⚡ Teste de Envio em Tempo Real</h3>
+        <p class="muted" style="margin-top:4px;">Faça um disparo de teste direto para o seu próprio WhatsApp para validar a conexão.</p>
+
+        <form id="uazapiQuickTestForm" class="panel form-grid" style="margin-top:14px; background:var(--surface);">
+          <label class="wide">Número de Telefone (com DDD)
+            <input id="uazapiTestNumber" type="tel" placeholder="(11) 99999-9999" required />
+            <small class="muted" style="margin-top:3px; font-size:0.8rem;">Ex: (11) 98765-4321 ou 11987654321</small>
+          </label>
+          <label class="wide">Mensagem de Teste
+            <textarea id="uazapiTestMessage" rows="4" style="resize:vertical;">🐾 Olá! Este é um teste da integração do Meu Pet em Arte com a UAZAPI no WhatsApp. Tudo funcionando perfeitamente! ✨</textarea>
+          </label>
+          <div class="wide quick-actions wrap" style="margin-top:8px; align-items:center;">
+            <button class="primary-button" type="submit" id="btnSubmitQuickTest">🚀 Enviar Mensagem de Teste</button>
+            <span id="uazapiQuickTestFeedback" class="cep-feedback"></span>
+          </div>
+        </form>
+
+        <div style="margin-top:16px; padding:12px; background:rgba(125,125,125,0.06); border-radius:8px; border:1px solid var(--line); font-size:0.85rem;">
+          <b>💡 Como usar nos pedidos:</b>
+          <p class="muted" style="margin:4px 0 0;">Em qualquer lista, cartão ou detalhes do pedido, basta clicar no ícone <b>💬</b> para abrir a tela de envio com os dados do cliente e do pet já preenchidos!</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Meus Modelos Personalizados -->
+    <div class="panel" style="margin-top:20px;">
+      <div class="section-head" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+        <div>
+          <h3 style="margin:0;">⭐ Meus Modelos Personalizados</h3>
+          <p class="muted" style="margin:4px 0 0; font-size:0.85rem;">Crie mensagens personalizadas para selecionar facilmente na lista de envio.</p>
+        </div>
+      </div>
+
+      <!-- Formulário para Criar Novo Modelo -->
+      <form id="createCustomTemplateForm" class="panel form-grid" style="background:var(--surface); margin-bottom:16px; border:1px solid var(--line);">
+        <div class="wide">
+          <strong style="font-size:0.95rem;">➕ Cadastrar Novo Modelo</strong>
+        </div>
+        <label class="wide">Nome do Modelo (como aparecerá na lista)
+          <input name="label" placeholder="Ex: Aviso de Retirada, Cobrança 2º Aviso, Promoção..." required />
+        </label>
+        <label class="wide">Texto da Mensagem
+          <textarea name="template" rows="4" placeholder="Escreva a mensagem aqui... Use variáveis como {{primeiro_nome}}, {{pet}}, {{rastreio}}, {{transportadora}}, {{link_rastreio}}, {{valor_total}}" required style="resize:vertical;"></textarea>
+        </label>
+        <div class="wide" style="font-size:0.8rem; color:var(--muted); line-height:1.4;">
+          Variáveis automáticas disponíveis: <code>{{primeiro_nome}}</code>, <code>{{cliente}}</code>, <code>{{pet}}</code>, <code>{{id}}</code>, <code>{{rastreio}}</code>, <code>{{transportadora}}</code>, <code>{{link_rastreio}}</code>, <code>{{valor_total}}</code>
+        </div>
+        <div class="wide" style="margin-top:4px;">
+          <button class="primary-button" type="submit">Salvar Modelo</button>
+        </div>
+      </form>
+
+      <!-- Lista de Modelos Criados -->
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px;">
+        ${(state.uazapiCustomTemplates || []).length === 0 ? `
+          <div class="wide muted" style="padding:16px; background:rgba(125,125,125,0.06); border-radius:8px; border:1px dashed var(--line); text-align:center;">
+            Você ainda não cadastrou nenhum modelo personalizado. Crie um acima ou salve direto pela janela de envio de qualquer pedido!
+          </div>
+        ` : (state.uazapiCustomTemplates || []).map(tpl => `
+          <div style="background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:14px; display:flex; flex-direction:column; justify-content:space-between;">
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; gap:8px;">
+                <strong style="color:var(--ink);">${escapeHtml(tpl.label)}</strong>
+                <button type="button" class="mini-button danger-button" data-delete-custom-template="${tpl.id}" title="Excluir este modelo" style="padding:2px 8px; font-size:0.75rem;">Excluir</button>
+              </div>
+              <pre style="white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:0.83rem; background:rgba(125,125,125,0.06); padding:10px; border-radius:6px; margin:0; line-height:1.45;">${escapeHtml(tpl.template)}</pre>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+
+    <!-- Catálogo de Modelos da Loja -->
+    <div class="panel" style="margin-top:20px;">
+      <div class="section-head" style="margin-bottom:12px;">
+        <h3 style="margin:0;">📋 Modelos Padrão do Sistema</h3>
+        <p class="muted" style="margin:4px 0 0; font-size:0.85rem;">Estes modelos pré-configurados estão sempre disponíveis para consulta e uso:</p>
+      </div>
+
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px;">
+        ${Object.values(UAZAPI_TEMPLATES).map(tpl => `
+          <div style="background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:14px; display:flex; flex-direction:column; justify-content:space-between;">
+            <div>
+              <strong style="display:block; margin-bottom:8px; color:var(--ink);">${escapeHtml(tpl.label)}</strong>
+              <pre style="white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:0.83rem; background:rgba(125,125,125,0.06); padding:10px; border-radius:6px; margin:0; line-height:1.45;">${escapeHtml(tpl.template)}</pre>
+            </div>
+            <div style="margin-top:10px; font-size:0.75rem;" class="muted">
+              Variáveis automáticas: <code>{{primeiro_nome}}</code>, <code>{{pet}}</code>, <code>{{id}}</code>, <code>{{rastreio}}</code>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function handleQuickTestUazapi() {
+  const numberInput = document.getElementById("uazapiTestNumber");
+  const msgInput = document.getElementById("uazapiTestMessage");
+  const btn = document.getElementById("btnSubmitQuickTest");
+  const feedback = document.getElementById("uazapiQuickTestFeedback");
+
+  const number = numberInput ? numberInput.value.trim() : "";
+  const text = msgInput ? msgInput.value.trim() : "";
+
+  if (!number) {
+    if (feedback) {
+      feedback.textContent = "❌ Digite um número de WhatsApp para testar.";
+      feedback.className = "cep-feedback error";
+    }
+    return;
+  }
+  if (!text) {
+    if (feedback) {
+      feedback.textContent = "❌ Digite uma mensagem de teste.";
+      feedback.className = "cep-feedback error";
+    }
+    return;
+  }
+
+  const cfg = state.uazapiConfig || {};
+  if (!cfg.baseUrl || !cfg.token) {
+    if (feedback) {
+      feedback.textContent = "❌ Salve a URL e o Token da UAZAPI antes de realizar o teste.";
+      feedback.className = "cep-feedback error";
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "⏳ Enviando...";
+  }
+  if (feedback) {
+    feedback.textContent = "Disparando mensagem de teste...";
+    feedback.className = "cep-feedback";
+  }
+
+  try {
+    syncUazapiConfig();
+    await sendWhatsAppText({ number, text });
+    if (feedback) {
+      feedback.textContent = "✅ Mensagem de teste enviada com sucesso no WhatsApp!";
+      feedback.className = "cep-feedback success";
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `❌ ${err.message || "Erro no envio do teste."}`;
+      feedback.className = "cep-feedback error";
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "🚀 Enviar Mensagem de Teste";
+    }
+  }
 }
 
 function renderProducts() {
@@ -1609,6 +2425,35 @@ function ensureAppStructure() {
     const reportsButton = mobileNav.querySelector('[data-view="reports"]');
     mobileNav.insertBefore(button, reportsButton || null);
   }
+
+  if (main && !document.getElementById("whatsappView")) {
+    const section = document.createElement("section");
+    section.className = "view";
+    section.id = "whatsappView";
+    section.dataset.title = "WhatsApp (UAZAPI)";
+    const products = document.getElementById("productsView");
+    main.insertBefore(section, products || null);
+  }
+
+  if (sideNav && !sideNav.querySelector('[data-view="whatsapp"]')) {
+    const button = document.createElement("button");
+    button.className = "nav-item";
+    button.dataset.view = "whatsapp";
+    button.type = "button";
+    button.textContent = "WhatsApp 💬";
+    const productsButton = sideNav.querySelector('[data-view="products"]');
+    sideNav.insertBefore(button, productsButton || null);
+  }
+
+  if (mobileNav && !mobileNav.querySelector('[data-view="whatsapp"]')) {
+    const button = document.createElement("button");
+    button.className = "mobile-item";
+    button.dataset.view = "whatsapp";
+    button.type = "button";
+    button.textContent = "WhatsApp";
+    const productsButton = mobileNav.querySelector('[data-view="products"]');
+    mobileNav.insertBefore(button, productsButton || null);
+  }
 }
 
 function setView(view) {
@@ -1755,7 +2600,7 @@ function renderDashboardRecentOrders(orders) {
       </div>
       <div style="display:flex; align-items:center; gap: 8px;">
         <span class="status-pill ${statusClass(order.status)}">${order.status}</span>
-        ${order.whatsapp ? `<a href="https://wa.me/55${order.whatsapp.replace(/\D/g, '')}" target="_blank" class="mini-button" title="WhatsApp">💬</a>` : ''}
+        ${order.whatsapp ? `<button class="mini-button" type="button" data-open-whatsapp="${order.id}" title="Enviar WhatsApp via UAZAPI">💬</button>` : ''}
         <button class="mini-button" data-detail="${order.id}">Abrir</button>
       </div>
     </div>`;
@@ -1910,6 +2755,7 @@ function orderCard(order) {
         `}
       </div>
       <div class="order-card-actions">
+        <button class="mini-button" type="button" data-open-whatsapp="${order.id}" title="Enviar WhatsApp via UAZAPI">💬</button>
         <button class="mini-button" type="button" data-detail="${order.id}">Abrir</button>
         <button class="mini-button" type="button" data-print="${order.id}">Imprimir</button>
         <button class="mini-button danger-button" type="button" data-delete-order="${order.id}">Excluir</button>
@@ -1954,6 +2800,7 @@ function orderRow(order) {
       <td><input class="cell-input" data-edit="${order.id}" data-field="productionTime" type="number" step="0.1" value="${order.productionTime}"> h</td>
       <td><input class="cell-input" data-edit="${order.id}" data-field="material" type="number" step="0.1" value="${order.material}"> g</td>
       <td class="row-actions">
+        <button class="mini-button" type="button" data-open-whatsapp="${order.id}" title="Enviar WhatsApp via UAZAPI">💬</button>
         <button class="mini-button" data-detail="${order.id}">Abrir</button>
         <button class="mini-button" data-print="${order.id}">Imprimir</button>
         <button class="mini-button danger-button" data-delete-order="${order.id}">Excluir</button>
@@ -2125,7 +2972,7 @@ function advanceClientGroupIfComplete(groupOrders, status) {
     order[step.key] = [];
     order.history.unshift({ at: formatDateTime(new Date()), text: `Grupo avançou para ${nextStatus}` });
   });
-  save();
+  save(groupOrders);
 }
 
 function renderProduction() {
@@ -2478,7 +3325,7 @@ function renderExpenses() {
             <input name="cepOrigem" placeholder="00000-000" maxlength="9" value="${escapeHtml(state.superfreteConfig?.cepOrigem || '08140060')}" required />
           </label>
           <label>Peso Padrão (kg)
-            <input name="pesoDefault" type="number" step="0.001" min="0.001" value="${state.superfreteConfig?.pesoDefault || 0.03}" required />
+            <input name="pesoDefault" type="number" step="0.001" min="0.001" value="${state.superfreteConfig?.pesoDefault || 0.3}" required />
           </label>
           <label>Altura (cm)
             <input name="alturaDefault" type="number" step="0.1" min="1" value="${state.superfreteConfig?.alturaDefault || 2}" required />
@@ -2488,6 +3335,37 @@ function renderExpenses() {
           </label>
           <label>Comprimento (cm)
             <input name="comprimentoDefault" type="number" step="0.1" min="1" value="${state.superfreteConfig?.comprimentoDefault || 18}" required />
+          </label>
+          <div class="wide" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
+            <h4 style="margin:0 0 4px 0; font-size:0.95rem; color:var(--ink);">🏠 Endereço do Remetente (Origem da Postagem)</h4>
+            <p class="muted" style="font-size:0.8rem; margin:0 0 10px 0;">Dados impressos na etiqueta e na declaração de conteúdo da SuperFrete.</p>
+          </div>
+          <label>Nome do Remetente
+            <input name="remetenteNome" value="${escapeHtml(state.superfreteConfig?.remetenteNome || 'Karoline Gonçalves Garcia')}" required />
+          </label>
+          <label>Telefone do Remetente
+            <input name="remetenteTelefone" value="${escapeHtml(state.superfreteConfig?.remetenteTelefone || '11940878269')}" required />
+          </label>
+          <label>E-mail do Remetente
+            <input name="remetenteEmail" type="email" value="${escapeHtml(state.superfreteConfig?.remetenteEmail || 'contato@meupetemarte.com.br')}" required />
+          </label>
+          <label class="wide">Rua / Logradouro
+            <input name="remetenteEndereco" value="${escapeHtml(state.superfreteConfig?.remetenteEndereco || 'Rua Antônio João de Medeiros')}" required />
+          </label>
+          <label>Número
+            <input name="remetenteNumero" value="${escapeHtml(state.superfreteConfig?.remetenteNumero || '700A')}" required />
+          </label>
+          <label>Complemento
+            <input name="remetenteComplemento" value="${escapeHtml(state.superfreteConfig?.remetenteComplemento || 'Casa 83')}" />
+          </label>
+          <label>Bairro
+            <input name="remetenteBairro" value="${escapeHtml(state.superfreteConfig?.remetenteBairro || 'Itaim Paulista')}" required />
+          </label>
+          <label>Cidade
+            <input name="remetenteCidade" value="${escapeHtml(state.superfreteConfig?.remetenteCidade || 'São Paulo')}" required />
+          </label>
+          <label>UF
+            <input name="remetenteUF" maxlength="2" value="${escapeHtml(state.superfreteConfig?.remetenteUF || 'SP')}" required />
           </label>
           <div class="wide" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:4px;">
             <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
@@ -2503,6 +3381,41 @@ function renderExpenses() {
             <button class="primary-button" type="submit">Salvar Configurações</button>
             <button class="secondary-button" type="button" id="btnTestSuperfrete">Testar Conexão</button>
             <span id="superfreteTestFeedback" class="cep-feedback"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center;">
+          <h2>Integração WhatsApp (UAZAPI) 💬</h2>
+          <span class="status-pill ${state.uazapiConfig?.enabled ? 'status-finalizado' : 'status-cancelado'}" style="font-size:0.75rem; font-weight:800;">
+            ${state.uazapiConfig?.enabled ? 'ATIVO' : 'DESATIVADO'}
+          </span>
+        </div>
+        <p class="muted" style="margin-top:4px;">Disparo de mensagens automáticas e personalizadas de rastreio, prévias, cobrança PIX e status.</p>
+        
+        <form id="uazapiConfigForm" class="panel form-grid" style="margin-top:12px;">
+          <label class="wide">URL Base da Instância UAZAPI
+            <input name="baseUrl" type="url" placeholder="https://sua-instancia.uazapi.com" value="${escapeHtml(state.uazapiConfig?.baseUrl || '')}" required />
+            <small class="muted" style="margin-top:2px; font-size:0.8rem;">Exemplo: https://api.uazapi.com ou subdomínio do seu servidor</small>
+          </label>
+          <label class="wide">Token da Instância (Instance Token)
+            <input name="token" type="password" placeholder="Token ou chave da sua instância" value="${escapeHtml(state.uazapiConfig?.token || '')}" required />
+          </label>
+          <label>Delay de Digitação (ms)
+            <input name="delayMs" type="number" step="100" min="0" max="10000" value="${state.uazapiConfig?.delayMs || 1200}" />
+            <small class="muted" style="margin-top:2px; font-size:0.8rem;">Simula digitação antes do envio (padrão: 1200ms)</small>
+          </label>
+          <div class="wide" style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+            <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" name="enabled" ${state.uazapiConfig?.enabled !== false ? 'checked' : ''} />
+              <b>Ativar envio via UAZAPI no sistema</b>
+            </label>
+          </div>
+          <div class="wide quick-actions wrap" style="margin-top:8px; align-items:center;">
+            <button class="primary-button" type="submit">Salvar Configurações WhatsApp</button>
+            <button class="secondary-button" type="button" id="btnTestUazapi">Testar Conexão</button>
+            <span id="uazapiTestFeedback" class="cep-feedback"></span>
           </div>
         </form>
       </div>
@@ -3514,6 +4427,7 @@ function openDetails(id) {
             </div>
             <div class="quick-actions wrap">
               <button class="primary-button" type="button" data-toggle-detail-edit>Editar informações</button>
+              <button class="secondary-button" type="button" data-open-whatsapp="${order.id}">💬 Enviar WhatsApp (UAZAPI)</button>
               <button class="secondary-button" type="button" data-generate-label="${order.id}">🏷️ Gerar Etiqueta SuperFrete</button>
               ${order.superfreteLabelUrl ? `<a class="ghost-button" href="${order.superfreteLabelUrl}" target="_blank" rel="noopener">📄 Ver Etiqueta</a>` : ""}
               ${order.tracking ? `<a class="ghost-button" href="${obterLinkRastreio(order.tracking).url}" target="_blank" rel="noopener">🔍 Rastrear na ${obterLinkRastreio(order.tracking).carrier}</a>` : ""}
@@ -3818,11 +4732,12 @@ async function handleSpreadsheetFile(file) {
 }
 
 function confirmSpreadsheetImport() {
+  const imported = [...state.importRows];
   state.importRows.forEach((incoming) => {
     incoming.history.unshift({ at: formatDateTime(new Date()), text: `Importado pela planilha ${state.importFileName}` });
     state.orders.unshift(incoming);
   });
-  save();
+  save(imported);
   saveImportBatch({
     fileName: state.importFileName,
     importedCount: state.importRows.length,
@@ -3849,7 +4764,7 @@ function updateStatus(id, status) {
   if (!order || getOrderWorkflowStatus(order) === status) return;
   order.orderStatus = status;
   order.history.unshift({ at: formatDateTime(new Date()), text: `Status alterado para ${status}` });
-  save();
+  save(order);
   render();
 }
 
@@ -4154,13 +5069,15 @@ function bindEvents() {
       if (window.confirm(confirmMsg)) {
         if (count > 0) {
           const targetStatus = state.productionStatuses.find(s => s !== statusToDelete) || "Recebido";
+          const affected = [];
           state.orders.forEach(o => {
             if (o.status === statusToDelete) {
               o.status = targetStatus;
               o.history.unshift({ at: formatDateTime(new Date()), text: `Status movido para ${targetStatus} devido à exclusão da coluna ${statusToDelete}` });
+              affected.push(o);
             }
           });
-          save();
+          if (affected.length > 0) save(affected);
         }
         state.productionStatuses = state.productionStatuses.filter(s => s !== statusToDelete);
         saveProductionStatuses();
@@ -4226,7 +5143,7 @@ function bindEvents() {
       if (product) order.unitValue = product.unitValue;
       refreshOrderTotals(order);
       order.history.unshift({ at: formatDateTime(new Date()), text: "Informações do pedido atualizadas" });
-      save();
+      save(order);
       state.detailEditMode = false;
       openDetails(order.id);
     }
@@ -4313,10 +5230,12 @@ function bindEvents() {
     if (target.dataset.closeDetail !== undefined) state.detailEditMode = false;
     if (target.dataset.saveNotes) {
       const order = state.orders.find((item) => item.id === target.dataset.saveNotes);
-      order.notes = document.getElementById("detailNotes").value;
-      order.history.unshift({ at: formatDateTime(new Date()), text: "Observacoes atualizadas" });
-      save();
-      openDetails(order.id);
+      if (order) {
+        order.notes = document.getElementById("detailNotes").value;
+        order.history.unshift({ at: formatDateTime(new Date()), text: "Observacoes atualizadas" });
+        save(order);
+        openDetails(order.id);
+      }
     }
   });
 
@@ -4340,7 +5259,7 @@ function bindEvents() {
       const order = state.orders.find(o => o.id === event.target.dataset.shippingTracking);
       if (order) {
         order.tracking = event.target.value;
-        save();
+        debouncedSaveTracking(order);
       }
     }
     if (event.target.id === "orderSearch") {
@@ -4356,14 +5275,30 @@ function bindEvents() {
       state.labelsSearch = event.target.value;
       renderLabels();
     }
+    if (event.target.id === "uazapiMessageText") {
+      updateUazapiMessageDraft(false);
+    }
+    if (event.target.id === "lblModalWeight" || event.target.id === "lblModalHeight" || event.target.id === "lblModalWidth" || event.target.id === "lblModalLength") {
+      updateLabelConfirmationSummary();
+    }
   });
 
   document.body.addEventListener("change", async (event) => {
+    if (event.target.id === "uazapiTemplateSelect") {
+      updateUazapiMessageDraft(true);
+    }
     if (event.target.name === "cep" || event.target.id === "detailCep") {
       const digits = event.target.value.replace(/\D/g, "");
       if (digits.length === 8) {
         const ctx = event.target.id === "detailCep" ? "detail" : "order";
         handleCepLookup(ctx);
+      }
+    }
+    if (event.target.dataset.shippingTracking) {
+      const order = state.orders.find(o => o.id === event.target.dataset.shippingTracking);
+      if (order) {
+        order.tracking = event.target.value;
+        save(order);
       }
     }
     if (event.target.id === "labelsStatusFilter") {
@@ -4413,7 +5348,7 @@ function bindEvents() {
       if (!order) return;
       order.responsible = event.target.value;
       order.history.unshift({ at: formatDateTime(new Date()), text: `Responsável atribuído: ${event.target.value}` });
-      save();
+      save(order);
       renderProduction();
     }
     if (event.target.dataset.productionStep && event.target.dataset.productionOrder) {
@@ -4429,7 +5364,7 @@ function bindEvents() {
       order[step.key] = currentFlags;
       const petName = petNames[index] || `Pet ${index + 1}`;
       order.history.unshift({ at: formatDateTime(new Date()), text: `${step.label} marcado para ${petName} na etapa ${status}` });
-      save();
+      save(order);
       const groupOrders = state.orders.filter((item) => normalizeClientKey(item.client) === normalizeClientKey(order.client) && item.status === status);
       advanceClientGroupIfComplete(groupOrders, status);
       renderProduction();
@@ -4447,7 +5382,7 @@ function bindEvents() {
       refreshOrderTotals(order);
       order.history = order.history || [];
       order.history.unshift({ at: formatDateTime(new Date()), text: `Campo ${field} atualizado` });
-      save();
+      save(order);
       render();
     }
     if (event.target.dataset.expenseEdit) {
@@ -4466,7 +5401,7 @@ function bindEvents() {
       order[event.target.dataset.field] = await fileToDataUrl(file);
       order[`${event.target.dataset.field}Name`] = file.name;
       order.history.unshift({ at: formatDateTime(new Date()), text: "Imagem adicionada ao pedido" });
-      save();
+      save(order);
       openDetails(order.id);
     }
     if (event.target.dataset.assetMulti !== undefined) {
@@ -4479,7 +5414,7 @@ function bindEvents() {
       order.petPhotos[index] = url;
       if (index === 0) order.petPhoto = url; // sync first photo
       order.history.unshift({ at: formatDateTime(new Date()), text: "Foto do pet atualizada" });
-      save();
+      save(order);
       openDetails(order.id);
     }
     if (event.target.id === "spreadsheetInput") {
@@ -4572,7 +5507,7 @@ function bindEvents() {
           order.history = order.history || [];
           order.history.unshift({ at: formatDateTime(new Date()), text: `Grupo movido para ${status} via quadro` });
         });
-        save();
+        save(sourceOrders);
         renderProduction();
         if (typeof renderShipping === "function") renderShipping();
         renderOrders();
@@ -4584,7 +5519,7 @@ function bindEvents() {
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
           order.history = order.history || [];
           order.history.unshift({ at: formatDateTime(new Date()), text: `Status movido para ${status} via quadro` });
-          save();
+          save(order);
           renderProduction();
           if (typeof renderShipping === "function") renderShipping();
           renderOrders();
@@ -4731,6 +5666,37 @@ function bindEvents() {
     if (event.target.id === "resetExpenseExamples") resetExpenseExamples();
     if (event.target.id === "btnCalcFrete" || event.target.closest("#btnCalcFrete")) handleCalcFrete();
     if (event.target.id === "btnTestSuperfrete" || event.target.closest("#btnTestSuperfrete")) testSuperfreteConnection();
+    if (event.target.id === "btnTestUazapi" || event.target.closest("#btnTestUazapi")) testUazapiSettingsConnection();
+    if (event.target.dataset.openWhatsapp || event.target.closest('[data-open-whatsapp]')) {
+      const btn = event.target.closest('[data-open-whatsapp]') || event.target;
+      openUazapiModal(btn.dataset.openWhatsapp);
+    }
+    if (event.target.id === "btnCloseUazapiModal" || event.target.closest("#btnCloseUazapiModal")) {
+      document.getElementById("uazapiModal")?.close();
+    }
+    if (event.target.id === "btnSendUazapi" || event.target.closest("#btnSendUazapi")) {
+      handleSendUazapiMessage();
+    }
+    if (event.target.id === 'btnToggleSaveTemplate' || event.target.closest('#btnToggleSaveTemplate')) {
+      const row = document.getElementById('saveTemplateRow');
+      if (row) {
+        row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+        if (row.style.display === 'flex') {
+          document.getElementById('newTemplateName')?.focus();
+        }
+      }
+    }
+    if (event.target.id === 'btnConfirmSaveTemplate' || event.target.closest('#btnConfirmSaveTemplate')) {
+      handleSaveCurrentAsTemplate();
+    }
+    if (event.target.id === 'btnCancelSaveTemplate' || event.target.closest('#btnCancelSaveTemplate')) {
+      const row = document.getElementById('saveTemplateRow');
+      if (row) row.style.display = 'none';
+    }
+    if (event.target.dataset.deleteCustomTemplate || event.target.closest('[data-delete-custom-template]')) {
+      const btn = event.target.closest('[data-delete-custom-template]') || event.target;
+      deleteCustomTemplate(btn.dataset.deleteCustomTemplate);
+    }
     if (event.target.dataset.generateLabel || event.target.closest('[data-generate-label]')) {
       const btn = event.target.closest('[data-generate-label]') || event.target;
       handleGenerateLabel(btn.dataset.generateLabel);
@@ -4870,7 +5836,7 @@ function bindEvents() {
     order.totalWithShipping = order.totalSale + order.shipping;
 
     state.orders.unshift(order);
-    save();
+    save(order);
     form.reset();
     document.getElementById("superfreteQuoteResults").style.display = "none";
     document.getElementById("superfreteQuoteFeedback").textContent = "";
@@ -4884,18 +5850,64 @@ function bindEvents() {
       const data = Object.fromEntries(new FormData(event.target));
       state.superfreteConfig = {
         token: String(data.token || "").trim(),
-        cepOrigem: String(data.cepOrigem || "").replace(/\D/g, ""),
-        pesoDefault: Number(data.pesoDefault || 0.03),
+        cepOrigem: String(data.cepOrigem || "08140060").replace(/\D/g, ""),
+        pesoDefault: Number(data.pesoDefault || 0.3),
         alturaDefault: Number(data.alturaDefault || 2),
         larguraDefault: Number(data.larguraDefault || 12),
         comprimentoDefault: Number(data.comprimentoDefault || 18),
         enabled: data.enabled === "on" || data.enabled === true,
-        sandbox: data.sandbox === "on" || data.sandbox === true
+        sandbox: data.sandbox === "on" || data.sandbox === true,
+        remetenteNome: String(data.remetenteNome || "Karoline Gonçalves Garcia").trim(),
+        remetenteTelefone: String(data.remetenteTelefone || "11940878269").trim(),
+        remetenteEmail: String(data.remetenteEmail || "contato@meupetemarte.com.br").trim(),
+        remetenteEndereco: String(data.remetenteEndereco || "Rua Antônio João de Medeiros").trim(),
+        remetenteNumero: String(data.remetenteNumero || "700A").trim(),
+        remetenteComplemento: String(data.remetenteComplemento || "Casa 83").trim(),
+        remetenteBairro: String(data.remetenteBairro || "Itaim Paulista").trim(),
+        remetenteCidade: String(data.remetenteCidade || "São Paulo").trim(),
+        remetenteUF: String(data.remetenteUF || "SP").trim().toUpperCase()
       };
       saveSuperfreteSettings();
       render();
       setView("expenses");
       alert("Configurações do SuperFrete salvas com sucesso!");
+    }
+    if (event.target.id === "uazapiConfigForm") {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      state.uazapiConfig = {
+        baseUrl: String(data.baseUrl || "").trim().replace(/\/+$/, ''),
+        token: String(data.token || "").trim(),
+        enabled: data.enabled === "on" || data.enabled === true,
+        delayMs: Number(data.delayMs || 1200)
+      };
+      saveUazapiSettings();
+      render();
+      if (state.currentView) setView(state.currentView);
+      alert("Configurações do WhatsApp (UAZAPI) salvas com sucesso!");
+    }
+    if (event.target.id === "uazapiQuickTestForm") {
+      event.preventDefault();
+      handleQuickTestUazapi();
+    }
+    if (event.target.id === "createCustomTemplateForm") {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      const label = String(data.label || '').trim();
+      const template = String(data.template || '').trim();
+      if (!label || !template) return alert('Preencha o nome e o texto da mensagem.');
+
+      state.uazapiCustomTemplates = state.uazapiCustomTemplates || [];
+      state.uazapiCustomTemplates.push({
+        id: 'custom_' + Date.now(),
+        label: label,
+        template: template
+      });
+      saveCustomTemplates(state.uazapiCustomTemplates);
+      saveSettings('uazapi_custom_templates', state.uazapiCustomTemplates);
+      event.target.reset();
+      render();
+      alert('Modelo de mensagem salvo com sucesso!');
     }
     if (event.target.id === "expenseForm") {
       event.preventDefault();
@@ -4948,11 +5960,15 @@ function bindEvents() {
         const previousName = state.products[productIndex].name;
         state.products[productIndex] = nextProduct;
         if (previousName !== nextProduct.name) {
+          const changedOrders = [];
           state.orders.forEach((order) => {
-            if (order.product === previousName) order.product = nextProduct.name;
+            if (order.product === previousName) {
+              order.product = nextProduct.name;
+              changedOrders.push(order);
+            }
           });
           if (state.reportProduct === previousName) state.reportProduct = nextProduct.name;
-          save();
+          if (changedOrders.length > 0) save(changedOrders);
         }
       } else {
         state.products.push(nextProduct);
@@ -5094,8 +6110,31 @@ async function bootData() {
       sData.forEach(s => {
         if (s.key === 'shipping_rates') state.shippingRates = s.value;
         if (s.key === 'superfrete_config') {
-          state.superfreteConfig = s.value;
+          state.superfreteConfig = { ...state.superfreteConfig, ...s.value };
+          if (!state.superfreteConfig.pesoDefault || state.superfreteConfig.pesoDefault === 0.03) {
+            state.superfreteConfig.pesoDefault = 0.3;
+          }
+          if (!state.superfreteConfig.remetenteEndereco || state.superfreteConfig.remetenteEndereco === 'Rua Principal') {
+            state.superfreteConfig.remetenteNome = 'Karoline Gonçalves Garcia';
+            state.superfreteConfig.remetenteTelefone = '11940878269';
+            state.superfreteConfig.remetenteEmail = 'contato@meupetemarte.com.br';
+            state.superfreteConfig.remetenteEndereco = 'Rua Antônio João de Medeiros';
+            state.superfreteConfig.remetenteNumero = '700A';
+            state.superfreteConfig.remetenteComplemento = 'Casa 83';
+            state.superfreteConfig.remetenteBairro = 'Itaim Paulista';
+            state.superfreteConfig.remetenteCidade = 'São Paulo';
+            state.superfreteConfig.remetenteUF = 'SP';
+            state.superfreteConfig.cepOrigem = '08140060';
+          }
           syncSuperfreteConfig();
+        }
+        if (s.key === 'uazapi_config') {
+          state.uazapiConfig = s.value;
+          syncUazapiConfig();
+        }
+        if (s.key === 'uazapi_custom_templates') {
+          state.uazapiCustomTemplates = s.value;
+          saveCustomTemplates(state.uazapiCustomTemplates);
         }
       });
     }

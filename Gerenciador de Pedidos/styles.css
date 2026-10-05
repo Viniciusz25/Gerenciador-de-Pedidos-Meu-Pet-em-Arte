@@ -3729,4 +3729,34 @@ body.dark .kanban-card-new.overdue {
   background: var(--surface, #f8fafc);
 }
 
+.label-confirmation-box {
+  background: color-mix(in srgb, var(--brand, #0284c7) 3%, var(--surface-solid, #ffffff));
+  border: 1px solid color-mix(in srgb, var(--brand, #0284c7) 22%, var(--line, #cbd5e1));
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.label-confirm-card {
+  background: var(--surface-solid, #ffffff);
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.quote-badge-preferential {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  padding: 2px 7px;
+  display: inline-flex;
+  align-items: center;
+}
+
+
 

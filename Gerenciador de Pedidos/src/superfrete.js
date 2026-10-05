@@ -172,16 +172,16 @@ export async function criarFrete({
 
   const body = {
     from: {
-      name: from.name || 'Meu Pet em Arte',
-      phone: String(from.phone || '11999999999').replace(/\D/g, ''),
+      name: from.name || 'Karoline Gonçalves Garcia',
+      phone: String(from.phone || '11940878269').replace(/\D/g, ''),
       email: from.email || 'contato@meupetemarte.com.br',
       document: String(from.document || '').replace(/\D/g, ''),
       company_document: String(from.companyDocument || '').replace(/\D/g, ''),
       state_register: from.stateRegister || '',
-      address: from.address || 'Rua Principal',
-      complement: from.complement || '',
-      number: from.number || '100',
-      district: from.district || 'Centro',
+      address: from.address || 'Rua Antônio João de Medeiros',
+      complement: from.complement || 'Casa 83',
+      number: from.number || '700A',
+      district: from.district || 'Itaim Paulista',
       city: from.city || 'São Paulo',
       state_abbr: (from.stateAbbr || from.state_abbr || 'SP').toUpperCase().trim(),
       country_id: from.countryId || 'BR',
