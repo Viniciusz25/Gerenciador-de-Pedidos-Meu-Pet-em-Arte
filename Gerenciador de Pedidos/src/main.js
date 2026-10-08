@@ -1644,7 +1644,6 @@ async function syncTrackingSuperfrete({ isManual = false, orderId = null } = {})
   syncSuperfreteConfig();
   render();
 
-  const cleanName = (n) => String(n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '').trim();
   let updatedCount = 0;
 
   try {
@@ -1670,8 +1669,12 @@ async function syncTrackingSuperfrete({ isManual = false, orderId = null } = {})
       const o = state.orders.find(item => item.id === orderId);
       if (o) ordersToSync = [o];
     } else {
-      // Sincroniza pedidos que não estão cancelados
-      ordersToSync = state.orders.filter(o => o.status !== "Cancelado");
+      // Sincroniza em segundo plano apenas pedidos ativos que possuem ID da SuperFrete ou rastreio, e que ainda não foram entregues ou cancelados
+      ordersToSync = state.orders.filter(o => {
+        if (o.status === "Cancelado" || o.status === "Entregue") return false;
+        if (getOrderWorkflowStatus(o) === "Entregue" || getOrderWorkflowStatus(o) === "Cancelado") return false;
+        return Boolean(o.superfreteOrderId || o.tracking);
+      });
     }
 
     if (!ordersToSync.length) {
@@ -1689,14 +1692,23 @@ async function syncTrackingSuperfrete({ isManual = false, orderId = null } = {})
 
     for (const order of ordersToSync) {
       try {
-        // Tenta achar na lista em lote da SuperFrete primeiro
+        // Tenta achar na lista da SuperFrete APENAS por identificadores exclusivos do pedido:
+        // 1. ID do pedido na SuperFrete (superfreteOrderId)
+        // 2. Código de rastreio exato (tracking)
+        // 3. Tag do frete correspondente ao ID interno do pedido MPA (tag / tags)
+        // NUNCA cruzar por nome de cliente, pois clientes recorrentes têm nomes iguais e causariam cruzamento de dados.
         let lbl = allLabels.find(l => {
           const sfId = l.order_id || l.id;
-          const matchId = sfId && order.superfreteOrderId && String(order.superfreteOrderId) === String(sfId);
-          const matchTracking = l.tracking && order.tracking && String(l.tracking).trim().toLowerCase() === String(order.tracking).trim().toLowerCase();
-          const matchName = l.to && l.to.name && order.client && cleanName(l.to.name) === cleanName(order.client);
-          const matchTag = Array.isArray(l.tags) && l.tags.some(t => (t.tag === order.id || t === order.id));
-          return matchId || matchTracking || matchName || matchTag;
+          const matchId = Boolean(sfId && order.superfreteOrderId && String(order.superfreteOrderId) === String(sfId));
+          const matchTracking = Boolean(l.tracking && order.tracking && String(l.tracking).trim().toLowerCase() === String(order.tracking).trim().toLowerCase());
+          const matchTag = Boolean(
+            (l.tag && String(l.tag).trim().toLowerCase() === String(order.id).trim().toLowerCase()) ||
+            (Array.isArray(l.tags) && l.tags.some(t => {
+              const val = typeof t === 'object' && t !== null ? (t.tag || t.id || '') : String(t);
+              return String(val).trim().toLowerCase() === String(order.id).trim().toLowerCase();
+            }))
+          );
+          return matchId || matchTracking || matchTag;
         });
 
         // Se não encontrou na lista geral mas tem superfreteOrderId e ainda não foi entregue, consulta individualmente
@@ -2616,31 +2628,36 @@ function tableHeader(key, label) {
   return `<th><button class="sort-button" data-sort="${key}">${label}<span>${mark}</span></button></th>`;
 }
 
+function withPreservedFocus(fn) {
+  const active = document.activeElement;
+  const isInput = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA");
+  const id = isInput && active.id ? active.id : null;
+  const start = isInput ? active.selectionStart : null;
+  const end = isInput ? active.selectionEnd : null;
+
+  fn();
+
+  if (id) {
+    const el = document.getElementById(id);
+    if (el) {
+      if (document.activeElement !== el) {
+        try { el.focus(); } catch (_) {}
+      }
+      if (start !== null && end !== null) {
+        try { el.setSelectionRange(start, end); } catch (_) {}
+      }
+    }
+  }
+}
+
 function renderOrders() {
   const orders = filteredOrders();
   try { console.debug("renderOrders: state.orders.length=", state.orders && state.orders.length, "filtered.length=", orders.length, state.viewMode); } catch(e) { console.debug('renderOrders debug error', e); }
   const pages = Math.max(Math.ceil(orders.length / pageSize), 1);
   state.page = Math.min(state.page, pages);
   const pageOrders = orders.slice((state.page - 1) * pageSize, state.page * pageSize);
-  document.getElementById("ordersView").innerHTML = `
-    <div class="panel table-shell">
-      <div class="table-toolbar">
-        <input class="search-input" id="orderSearch" value="${escapeHtml(state.query)}" placeholder="Buscar cliente, produto, rastreio ou status" />
-        <select id="statusFilter">
-          <option>Todos</option>
-          ${ORDER_STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}
-        </select>
-        <button class="ghost-button" type="button" data-toggle-view title="${state.viewMode === 'list' ? 'Exibir em cartões pequenos' : 'Exibir em lista'}">
-          ${state.viewMode === 'list' ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>' : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>'}
-        </button>
-        <button class="ghost-button" type="button" id="btnSyncAllTracking" title="Verificar status de entrega dos envios na SuperFrete" ${state.isTrackingSyncing ? 'disabled' : ''}>
-          ${state.isTrackingSyncing ? '⏳ Atualizando...' : '🔄 Atualizar Rastreios'}
-        </button>
-        <span class="tracking-sync-badge" title="Sincronização em segundo plano ativa a cada 10 min">
-          <span class="dot"></span> ${getLastTrackingSyncText()}
-        </span>
-        <button class="primary-button" type="button" data-open-order>Novo pedido</button>
-      </div>
+
+  const contentHtml = `
       ${state.viewMode === 'list' ? `
       <div class="panel table-shell">
         <div class="table-wrap">
@@ -2683,8 +2700,67 @@ function renderOrders() {
           <button class="mini-button" data-page="${state.page + 1}" ${state.page === pages ? "disabled" : ""}>Proxima</button>
         </div>
       </div>
-    </div>
   `;
+
+  const ordersView = document.getElementById("ordersView");
+  const existingArea = document.getElementById("ordersContentArea");
+  const existingSearch = document.getElementById("orderSearch");
+
+  if (ordersView && existingArea && existingSearch && ordersView.contains(existingArea)) {
+    existingArea.innerHTML = contentHtml;
+    if (document.activeElement !== existingSearch && existingSearch.value !== (state.query || "")) {
+      existingSearch.value = state.query || "";
+    }
+    const statusFilter = document.getElementById("statusFilter");
+    if (statusFilter && document.activeElement !== statusFilter && statusFilter.value !== (state.statusFilter || "Todos")) {
+      statusFilter.value = state.statusFilter || "Todos";
+    }
+    const viewBtn = ordersView.querySelector("[data-toggle-view]");
+    if (viewBtn) {
+      viewBtn.title = state.viewMode === 'list' ? 'Exibir em cartões pequenos' : 'Exibir em lista';
+      viewBtn.innerHTML = state.viewMode === 'list' 
+        ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>' 
+        : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>';
+    }
+    const syncBtn = document.getElementById("btnSyncAllTracking");
+    if (syncBtn) {
+      syncBtn.disabled = !!state.isTrackingSyncing;
+      syncBtn.textContent = state.isTrackingSyncing ? '⏳ Atualizando...' : '🔄 Atualizar Rastreios';
+    }
+    const syncBadge = ordersView.querySelector(".tracking-sync-badge");
+    if (syncBadge) {
+      syncBadge.innerHTML = `<span class="dot"></span> ${getLastTrackingSyncText()}`;
+    }
+    return;
+  }
+
+  withPreservedFocus(() => {
+    if (!ordersView) return;
+    ordersView.innerHTML = `
+      <div class="panel table-shell">
+        <div class="table-toolbar">
+          <input class="search-input" id="orderSearch" value="${escapeHtml(state.query)}" placeholder="Buscar cliente, produto, rastreio ou status" />
+          <select id="statusFilter">
+            <option>Todos</option>
+            ${ORDER_STATUSES.map((status) => `<option ${state.statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}
+          </select>
+          <button class="ghost-button" type="button" data-toggle-view title="${state.viewMode === 'list' ? 'Exibir em cartões pequenos' : 'Exibir em lista'}">
+            ${state.viewMode === 'list' ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>' : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>'}
+          </button>
+          <button class="ghost-button" type="button" id="btnSyncAllTracking" title="Verificar status de entrega dos envios na SuperFrete" ${state.isTrackingSyncing ? 'disabled' : ''}>
+            ${state.isTrackingSyncing ? '⏳ Atualizando...' : '🔄 Atualizar Rastreios'}
+          </button>
+          <span class="tracking-sync-badge" title="Sincronização em segundo plano ativa a cada 10 min">
+            <span class="dot"></span> ${getLastTrackingSyncText()}
+          </span>
+          <button class="primary-button" type="button" data-open-order>Novo pedido</button>
+        </div>
+        <div id="ordersContentArea">
+          ${contentHtml}
+        </div>
+      </div>
+    `;
+  });
 }
 
 function orderCard(order) {
@@ -5253,7 +5329,7 @@ function bindEvents() {
     }
     if (event.target.id === "shippingSearch") {
       state.shippingSearch = event.target.value;
-      renderShipping();
+      withPreservedFocus(() => renderShipping());
     }
     if (event.target.dataset.shippingTracking) {
       const order = state.orders.find(o => o.id === event.target.dataset.shippingTracking);
@@ -5269,11 +5345,11 @@ function bindEvents() {
     }
     if (event.target.id === "productionSearch") {
       state.productionSearch = event.target.value;
-      renderProduction();
+      withPreservedFocus(() => renderProduction());
     }
     if (event.target.id === "labelsSearchInput") {
       state.labelsSearch = event.target.value;
-      renderLabels();
+      withPreservedFocus(() => renderLabels());
     }
     if (event.target.id === "uazapiMessageText") {
       updateUazapiMessageDraft(false);
@@ -6093,6 +6169,43 @@ async function bootData() {
         }
         return order;
       });
+
+      // Limpeza de segurança para evitar contaminação de superfreteOrderId ou dados clonados entre pedidos
+      const seenSfOrders = new Map();
+      const sortedByDate = [...state.orders].sort((a, b) => new Date(a.date || a.created_at || 0) - new Date(b.date || b.created_at || 0));
+      for (const ord of sortedByDate) {
+        if (ord.superfreteOrderId) {
+          if (seenSfOrders.has(ord.superfreteOrderId)) {
+            const original = seenSfOrders.get(ord.superfreteOrderId);
+            console.warn(`[Sync Security] Limpando superfreteOrderId duplicado no pedido ${ord.id} (pertence ao pedido ${original.id})`);
+            ord.superfreteOrderId = "";
+            ord.superfreteStatus = "";
+            ord.superfreteLabelUrl = "";
+            ord.superfreteLabelId = "";
+            if (ord.tracking && ord.tracking === original.tracking && ord.id === 'MPA-261008-785') {
+              ord.tracking = "";
+            }
+          } else {
+            seenSfOrders.set(ord.superfreteOrderId, ord);
+          }
+        }
+        if (ord.id === 'MPA-261008-785') {
+          ord.superfreteOrderId = "";
+          ord.superfreteStatus = "";
+          ord.superfreteLabelUrl = "";
+          ord.superfreteLabelId = "";
+          ord.tracking = "";
+          ord.status = "Recebido";
+          ord.orderStatus = "Novo Pedido";
+          ord.actualDelivery = "";
+          if (Array.isArray(ord.history)) {
+            ord.history = ord.history.filter(h => !h.text?.includes('entregue') && !h.text?.includes('SLGE16Z0AEGV4'));
+          }
+        }
+      }
+      try {
+        localStorage.setItem("mpa:orders_v2", JSON.stringify(state.orders));
+      } catch (e) {}
     } else {
       state.orders = load("orders_v2", typeof seedOrders === "function" ? seedOrders() : []);
     }
