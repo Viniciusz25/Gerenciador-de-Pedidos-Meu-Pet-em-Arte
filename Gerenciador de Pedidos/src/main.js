@@ -2476,6 +2476,7 @@ function setView(view) {
   document.getElementById(`${targetView}View`).classList.add("active");
   document.getElementById("viewTitle").textContent = document.getElementById(`${targetView}View`).dataset.title;
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === targetView));
+  renderCurrentView();
 }
 
 function renderDashboard() {
@@ -2496,7 +2497,11 @@ function renderDashboard() {
   const recentOrders = activeOrders.slice(0, 6);
 
   const queueHtml = emotionalStatuses.map(status => {
-     const count = activeOrders.filter(o => o.status === status).length;
+     const count = activeOrders.filter(o => {
+       const wf = getOrderWorkflowStatus(o);
+       if (["Enviado", "Entregue", "Cancelado"].includes(o.status) || ["Enviado", "Entregue", "Cancelado"].includes(wf)) return false;
+       return o.status === status;
+     }).length;
      return `<span class="status-pill ${statusClass(status)}">${status}<b>${count}</b></span>`;
   }).join("");
 
@@ -2611,7 +2616,7 @@ function renderDashboardRecentOrders(orders) {
         </div>
       </div>
       <div style="display:flex; align-items:center; gap: 8px;">
-        <span class="status-pill ${statusClass(order.status)}">${order.status}</span>
+        <span class="status-pill ${statusClass(getOrderWorkflowStatus(order) || order.status)}">${escapeHtml(getOrderWorkflowStatus(order) || order.status)}</span>
         ${order.whatsapp ? `<button class="mini-button" type="button" data-open-whatsapp="${order.id}" title="Enviar WhatsApp via UAZAPI">💬</button>` : ''}
         <button class="mini-button" data-detail="${order.id}">Abrir</button>
       </div>
@@ -4839,6 +4844,21 @@ function updateStatus(id, status) {
   const order = state.orders.find((item) => item.id === id);
   if (!order || getOrderWorkflowStatus(order) === status) return;
   order.orderStatus = status;
+  if (status === "Entregue") {
+    order.status = "Entregue";
+    if (!order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
+  } else if (status === "Enviado") {
+    order.status = "Enviado";
+  } else if (status === "Postagem") {
+    order.status = "Postagem";
+  } else if (status === "Novo Pedido") {
+    order.status = state.productionStatuses[0] || "Recebido";
+  } else if (status === "Produção") {
+    if (!state.productionStatuses.includes(order.status) || order.status === (state.productionStatuses[0] || "Recebido")) {
+      order.status = state.productionStatuses[1] || "Em Produção";
+    }
+  }
+  order.history = order.history || [];
   order.history.unshift({ at: formatDateTime(new Date()), text: `Status alterado para ${status}` });
   save(order);
   render();
@@ -5214,7 +5234,22 @@ function bindEvents() {
       order.delivery = String(document.getElementById("detailDelivery")?.value || order.delivery);
       order.actualDelivery = String(document.getElementById("detailActualDelivery")?.value || order.actualDelivery || "");
       order.tracking = String(document.getElementById("detailTracking")?.value || "").trim();
-      order.orderStatus = String(document.getElementById("detailWorkflowStatus")?.value || getOrderWorkflowStatus(order));
+      const chosenWfStatus = String(document.getElementById("detailWorkflowStatus")?.value || getOrderWorkflowStatus(order));
+      order.orderStatus = chosenWfStatus;
+      if (chosenWfStatus === "Entregue") {
+        order.status = "Entregue";
+        if (!order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
+      } else if (chosenWfStatus === "Enviado") {
+        order.status = "Enviado";
+      } else if (chosenWfStatus === "Postagem") {
+        order.status = "Postagem";
+      } else if (chosenWfStatus === "Novo Pedido") {
+        order.status = state.productionStatuses[0] || "Recebido";
+      } else if (chosenWfStatus === "Produção") {
+        if (!state.productionStatuses.includes(order.status) || order.status === (state.productionStatuses[0] || "Recebido")) {
+          order.status = state.productionStatuses[1] || "Em Produção";
+        }
+      }
       order.priority = String(document.getElementById("detailPriority")?.value || order.priority || "Média");
       if (product) order.unitValue = product.unitValue;
       refreshOrderTotals(order);
@@ -5578,27 +5613,35 @@ function bindEvents() {
         if (!sourceOrders.length || payload.status === status) return;
         sourceOrders.forEach((order) => {
           order.status = status;
-          delete order.orderStatus;
+          if (status === "Entregue" || status === "Enviado" || status === "Postagem") {
+            order.orderStatus = status;
+          } else if (status === "Recebido") {
+            order.orderStatus = "Novo Pedido";
+          } else {
+            order.orderStatus = "Produção";
+          }
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
           order.history = order.history || [];
           order.history.unshift({ at: formatDateTime(new Date()), text: `Grupo movido para ${status} via quadro` });
         });
         save(sourceOrders);
-        renderProduction();
-        if (typeof renderShipping === "function") renderShipping();
-        renderOrders();
+        render();
       } else if (payload.orderId) {
         const order = state.orders.find((item) => item.id === payload.orderId);
         if (order && status && order.status !== status) {
           order.status = status;
-          delete order.orderStatus;
+          if (status === "Entregue" || status === "Enviado" || status === "Postagem") {
+            order.orderStatus = status;
+          } else if (status === "Recebido") {
+            order.orderStatus = "Novo Pedido";
+          } else {
+            order.orderStatus = "Produção";
+          }
           if (status === "Entregue" && !order.actualDelivery) order.actualDelivery = new Date().toISOString().slice(0, 10);
           order.history = order.history || [];
           order.history.unshift({ at: formatDateTime(new Date()), text: `Status movido para ${status} via quadro` });
           save(order);
-          renderProduction();
-          if (typeof renderShipping === "function") renderShipping();
-          renderOrders();
+          render();
         }
       }
       return;
@@ -6182,24 +6225,11 @@ async function bootData() {
             ord.superfreteStatus = "";
             ord.superfreteLabelUrl = "";
             ord.superfreteLabelId = "";
-            if (ord.tracking && ord.tracking === original.tracking && ord.id === 'MPA-261008-785') {
+            if (ord.tracking && ord.tracking === original.tracking) {
               ord.tracking = "";
             }
           } else {
             seenSfOrders.set(ord.superfreteOrderId, ord);
-          }
-        }
-        if (ord.id === 'MPA-261008-785') {
-          ord.superfreteOrderId = "";
-          ord.superfreteStatus = "";
-          ord.superfreteLabelUrl = "";
-          ord.superfreteLabelId = "";
-          ord.tracking = "";
-          ord.status = "Recebido";
-          ord.orderStatus = "Novo Pedido";
-          ord.actualDelivery = "";
-          if (Array.isArray(ord.history)) {
-            ord.history = ord.history.filter(h => !h.text?.includes('entregue') && !h.text?.includes('SLGE16Z0AEGV4'));
           }
         }
       }
